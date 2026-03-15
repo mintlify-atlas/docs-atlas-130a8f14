@@ -1,0 +1,133 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "MinIO",
+  "projectDescription": "MinIO is a high-performance, S3-compatible object storage server designed for cloud-native workloads including AI/ML, analytics, and large-scale data pipelines.",
+  "theme": "aspen",
+  "primaryColor": "#c42c47",
+  "lightColor": "#e7053e",
+  "darkColor": "#e47a9c",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/standalone",
+              "deployment/distributed",
+              "deployment/docker",
+              "deployment/kubernetes"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/erasure-coding",
+              "concepts/versioning",
+              "concepts/object-lifecycle",
+              "concepts/replication",
+              "concepts/site-replication"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/overview",
+              "security/tls",
+              "security/encryption",
+              "security/iam",
+              "security/sts"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/monitoring",
+              "operations/metrics",
+              "operations/batch-jobs",
+              "operations/decommissioning",
+              "operations/healing"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/bucket-notifications",
+              "features/object-lambda",
+              "features/ftp-sftp",
+              "features/compression",
+              "features/tiering"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "API Reference",
+            "pages": [
+              "reference/s3-api",
+              "reference/admin-api",
+              "reference/sts-api"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "reference/environment-variables",
+              "reference/server-flags",
+              "reference/storage-classes"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "S3-compatible API for seamless integration with existing S3 tools and SDKs",
+    "Erasure coding with Reed-Solomon for data protection against drive failures",
+    "Distributed deployment across multiple nodes and drives",
+    "Bucket versioning, lifecycle management, and object locking",
+    "Multi-site replication for geo-redundant deployments",
+    "Server-side encryption with KMS integration (SSE-KMS, SSE-S3, SSE-C)",
+    "Identity and access management with LDAP, OpenID Connect, and STS",
+    "Prometheus-compatible metrics and observability",
+    "Object Lambda for on-the-fly data transformation",
+    "FTP/SFTP protocol support",
+    "Batch jobs for large-scale data operations",
+    "Kubernetes and Helm chart support",
+    "Bitrot protection using HighwayHash checksums"
+  ],
+  "publicApiSurface": [
+    "GET/PUT/DELETE /buckets - Bucket management operations",
+    "GET/PUT/DELETE /objects - Object CRUD operations",
+    "PUT /buckets/{bucket}/replication - Bucket replication configuration",
+    "PUT /buckets/{bucket}/lifecycle - Lifecycle policy management",
+    "PUT /buckets/{bucket}/versioning - Versioning configuration",
+    "POST /buckets/{bucket}/object?uploads - Multipart upload initiation",
+    "GET /buckets/{bucket}/notification - Bucket notification configuration",
+    "POST /sts/AssumeRole - STS assume role",
+    "POST /sts/AssumeRoleWithWebIdentity - OIDC-based role assumption",
+    "POST /sts/AssumeRoleWithLDAPIdentity - LDAP-based role assumption",
+    "GET /minio/health/live - Liveness health check",
+    "GET /minio/health/ready - Readiness health check",
+    "GET /minio/metrics/v3 - Prometheus-compatible metrics endpoint",
+    "POST /minio/login - Admin console authentication",
+    "GET /minio/admin/v3/info - Cluster information",
+    "POST /minio/admin/v3/add-user - User management",
+    "GET /minio/admin/v3/list-buckets - Admin bucket listing",
+    "POST /minio/admin/v3/start-profile - Performance profiling",
+    "PUT /minio/admin/v3/set-config - Server configuration update"
+  ]
+}
