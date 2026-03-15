@@ -1,0 +1,259 @@
+---
+title: "Server-side encryption"
+description: "Encrypt objects at rest using SSE-S3, SSE-KMS, or SSE-C"
+---
+
+MinIO supports three server-side encryption (SSE) modes. All three use the same underlying key hierarchy and authenticated encryption scheme; they differ in who holds the master key.
+
+<CardGroup cols={3}>
+  <Card title="SSE-S3" icon="server">
+    Keys managed by MinIO via KMS. Clients request encryption with a single header; they never handle keys.
+  </Card>
+  <Card title="SSE-KMS" icon="building-columns">
+    Encryption backed by an external KMS (via KES). Supports multiple master keys and per-bucket key assignments.
+  </Card>
+  <Card title="SSE-C" icon="user-lock">
+    The client provides a secret key with each request. MinIO never stores the client key.
+  </Card>
+</CardGroup>
+
+## How encryption works
+
+For every encrypted object MinIO maintains three distinct keys:
+
+- **OEK (Object Encryption Key)** — randomly generated per object; encrypts the object content; stored encrypted in object metadata.
+- **KEK (Key Encryption Key)** — derived using HMAC-SHA-256 from the EK, a random IV, and context values (bucket/object name). Never stored.
+- **EK (External Key)** — the SSE-C client-provided key, or the data key returned by the KMS for SSE-S3/SSE-KMS.
+
+Object content is encrypted using a secure channel construction that splits data into 65,536-byte chunks. Each chunk is encrypted with AES-256-GCM (on CPUs with AES-NI) or ChaCha20-Poly1305, ensuring both confidentiality and integrity. The secure channel supports objects up to 256 TiB.
+
+## SSE-C — client-provided keys
+
+With SSE-C, the S3 client sends a 256-bit secret key as part of every request. MinIO uses the key in memory during encryption or decryption and never persists it.
+
+<Warning>
+SSE-C requires TLS. MinIO will reject SSE-C requests over plain HTTP.
+</Warning>
+
+### Request headers
+
+| Header | Value |
+|---|---|
+| `X-Amz-Server-Side-Encryption-Customer-Algorithm` | `AES256` |
+| `X-Amz-Server-Side-Encryption-Customer-Key` | Base64-encoded 256-bit key |
+| `X-Amz-Server-Side-Encryption-Customer-Key-MD5` | Base64-encoded MD5 of the key |
+
+### Key rotation
+
+To rotate the client-provided key on an existing object, perform an S3 COPY where the source and destination are the same object, and include both the current and new keys:
+
+| Header | Value |
+|---|---|
+| `X-Amz-Server-Side-Encryption-Customer-Key` | Base64-encoded **new** key |
+| `X-Amz-Copy-Source-Server-Side-Encryption-Customer-Key` | Base64-encoded **current** key |
+
+## SSE-S3 — KMS-managed keys
+
+With SSE-S3, MinIO requests a new data key from the configured KMS for each object upload. The plain data key is used as the EK and only resides in RAM during the operation. The encrypted form of the data key and the master key ID are stored in object metadata.
+
+### KMS quick start
+
+MinIO integrates with external KMS implementations through [KES](https://github.com/minio/kes). A public KES instance is available at `https://play.min.io:7373` for experimentation.
+
+<Steps>
+  <Step title="Fetch root identity">
+    ```sh
+    curl -sSL --tlsv1.2 \
+         -O 'https://raw.githubusercontent.com/minio/kes/master/root.key' \
+         -O 'https://raw.githubusercontent.com/minio/kes/master/root.cert'
+    ```
+  </Step>
+  <Step title="Configure MinIO-KES connection">
+    ```sh
+    export MINIO_KMS_KES_ENDPOINT=https://play.min.io:7373
+    export MINIO_KMS_KES_KEY_FILE=root.key
+    export MINIO_KMS_KES_CERT_FILE=root.cert
+    export MINIO_KMS_KES_KEY_NAME=my-minio-key
+    ```
+  </Step>
+  <Step title="Start MinIO">
+    ```sh
+    export MINIO_ROOT_USER=minio
+    export MINIO_ROOT_PASSWORD=minio123
+    minio server ~/export
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+The `https://play.min.io:7373` instance is public. Anyone can access or delete master keys stored there. Run your own KES instance in production.
+</Warning>
+
+### Supported KMS backends
+
+| KMS | Use case |
+|---|---|
+| Hashicorp Vault | On-premises; recommended for production |
+| AWS KMS + SecretsManager | Cloud-managed |
+| Gemalto KeySecure / Thales CipherTrust | On-premises |
+| Google Cloud Platform SecretManager | Cloud-managed |
+| Filesystem (FS) | Local development only; not for production |
+
+### Auto-encryption
+
+To automatically encrypt every object written to a bucket:
+
+```sh
+mc encrypt set sse-s3 myminio/bucket/
+```
+
+Verify the setting:
+
+```sh
+mc encrypt info myminio/bucket/
+Auto encryption 'sse-s3' is enabled
+```
+
+Alternatively, set the environment variable (not recommended for production):
+
+```sh
+export MINIO_KMS_AUTO_ENCRYPTION=on
+```
+
+<Note>
+Auto-encryption only applies to requests that do not already include S3 encryption headers. If a client sends SSE-C headers, MinIO honors those instead.
+</Note>
+
+### Verifying encryption
+
+```sh
+mc cp test.file myminio/bucket/
+mc stat myminio/bucket/test.file
+```
+
+The output should include:
+
+```
+Encrypted :
+  X-Amz-Server-Side-Encryption: AES256
+```
+
+### Encrypted KES private key
+
+MinIO supports password-protected KES client private keys. Provide the password via:
+
+```sh
+export MINIO_KMS_KES_KEY_PASSWORD=<your-password>
+```
+
+### SSE-S3 key rotation
+
+Key rotation for SSE-S3 re-encrypts the OEK under a new data key from the KMS without re-uploading the object. The operation:
+
+1. Sends the stored encrypted data key and master key ID to the KMS.
+2. Receives the decrypted data key.
+3. Decrypts the OEK using the KEK derived from the old data key.
+4. Requests a new data key from the KMS using the current master key ID.
+5. Re-wraps the OEK with a new KEK derived from the new data key.
+6. Stores the new encrypted OEK, new encrypted data key, and master key ID in object metadata.
+
+Only the root or admin user can trigger key rotation via `mc admin kms key`.
+
+## Encrypting IAM and config data
+
+MinIO can also encrypt its internal IAM and configuration data using the KMS.
+
+### Using a single static key (simplest)
+
+Generate a 256-bit key and set `MINIO_KMS_SECRET_KEY`:
+
+```sh
+cat /dev/urandom | head -c 32 | base64 -
+# Example output: OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+
+export MINIO_KMS_SECRET_KEY=my-minio-key:OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+```
+
+For distributed deployments, set the same `MINIO_KMS_SECRET_KEY` on every MinIO node.
+
+<Warning>
+Losing the `MINIO_KMS_SECRET_KEY` value causes permanent data loss — IAM and configuration data cannot be decrypted.
+</Warning>
+
+You can later migrate to a full KES deployment by importing the key:
+
+```sh
+kes key create my-minio-key OSMM+vkKUTCvQs9YL/CVMIMt43HFhkUpqJxTmGl6rYw=
+```
+
+### KMS deployment topology
+
+A typical MinIO deployment with SSE looks like this:
+
+```
+┌────────────┐
+│ ┌──────────┴─┬─────╮          ┌────────────┐
+└─┤ ┌──────────┴─┬───┴──────────┤ ┌──────────┴─┬─────────────────╮
+  └─┤ ┌──────────┴─┬─────┬──────┴─┤ KES Server ├─────────────────┤
+    └─┤   MinIO    ├─────╯        └────────────┘            ┌────┴────┐
+      └────────────┘                                        │   KMS   │
+                                                            └─────────┘
+```
+
+There can be `n` MinIO instances, `m` KES servers, and a single central KMS.
+
+## IAM policies for encryption enforcement
+
+You can enforce encryption requirements with bucket policies.
+
+<CodeGroup>
+
+```json Deny unencrypted uploads
+{
+   "Version":"2012-10-17",
+   "Id":"PutObjectPolicy",
+   "Statement":[{
+         "Sid":"DenyObjectsThatAreNotSSEKMS",
+         "Effect":"Deny",
+         "Principal":"*",
+         "Action":"s3:PutObject",
+         "Resource":"arn:aws:s3:::my-bucket/*",
+         "Condition":{
+            "Null":{
+               "s3:x-amz-server-side-encryption-aws-kms-key-id":"true"
+            }
+         }
+      }
+   ]
+}
+```
+
+```json Deny wrong KMS key ID
+{
+   "Version":"2012-10-17",
+   "Id":"PutObjectPolicy1",
+   "Statement":[{
+         "Sid":"DenyObjectsWithInvalidSSEKMS",
+         "Effect":"Deny",
+         "Principal":"*",
+         "Action":"s3:PutObject",
+         "Resource":"arn:aws:s3:::my-bucket/*",
+         "Condition":{
+            "StringNotEquals":{
+               "s3:x-amz-server-side-encryption-aws-kms-key-id":"minio-default-key"
+            }
+         }
+      }
+   ]
+}
+```
+
+</CodeGroup>
+
+## Secure erasure
+
+Because SSE-S3 decryption requires the KMS, you can make objects unreadable without deleting them:
+
+- **Seal the KMS** — all SSE-S3 encrypted objects are locked until the KMS is unsealed.
+- **Seal a master key** — only objects encrypted under that key are locked.
+- **Delete a master key** — equivalent to secure-erasing all objects encrypted under it. This operation is irreversible.

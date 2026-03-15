@@ -1,0 +1,177 @@
+---
+title: "Data healing"
+description: "Detect and repair corrupted or missing objects in MinIO"
+---
+
+MinIO healing detects and repairs objects that are corrupted, missing erasure shards, or otherwise degraded. Healing runs automatically in the background at all times, and can also be triggered on-demand for immediate repair of specific buckets or objects.
+
+## Background healing
+
+MinIO runs a continuous background healing process that works alongside the data scanner. The background healer:
+
+- Scans objects probabilistically (roughly 1 in 1024 objects per scanner cycle by default)
+- Repairs any objects with missing or corrupted shards that can be recovered from remaining shards
+- Automatically adjusts speed to avoid impacting concurrent S3 request traffic
+- Resumes after cluster restarts without configuration
+- Tracks healing progress via metrics exposed at `/minio/metrics/v3/scanner`
+
+Each node heals its own local drives. The number of concurrent heal workers per drive defaults to one quarter of the node's CPU core count.
+
+## Configuring background healing
+
+The `heal` subsystem supports **live reconfiguration** — changes take effect without restarting the server.
+
+```bash
+# View current heal configuration
+mc admin config get myminio/ heal
+
+# Set healing speed: allow healing up to 100 concurrent requests,
+# with a maximum of 300ms sleep between heal operations
+mc admin config set myminio/ heal max_sleep=300ms max_io=100
+
+# Enable bitrot scanning (checks data integrity at the byte level)
+mc admin config set myminio/ heal bitrotscan=on
+
+# Set the number of heal workers per drive
+mc admin config set myminio/ heal drive_workers=8
+```
+
+### Heal configuration reference
+
+| Config key | Type | Description |
+|---|---|---|
+| `bitrotscan` | on/off | Perform bitrot scan on drives during scanner checks (default: off) |
+| `max_sleep` | duration | Maximum sleep between heal operations to throttle speed (default: `250ms`) |
+| `max_io` | int | Maximum concurrent S3 requests before the healer starts sleeping (default: `100`) |
+| `drive_workers` | int | Number of concurrent heal workers per drive on new disk replacement |
+
+<Note>
+Setting `max_sleep` to a lower value and `max_io` to a higher value makes healing faster. Increase `max_sleep` or decrease `max_io` on busy clusters to reduce healing's impact on S3 performance.
+</Note>
+
+## Scanner configuration
+
+The data scanner drives background healing, usage calculation, and ILM enforcement. Its speed is configurable:
+
+```bash
+# View current scanner configuration
+mc admin config get myminio/ scanner
+
+# Slow down scanner (factor of 30x operation time between items)
+mc admin config set myminio/ scanner delay=30.0
+
+# Set a maximum wait time between operations
+mc admin config set myminio/ scanner max_wait=15s
+
+# Control the scanner cycle duration
+mc admin config set myminio/ scanner cycle=1m
+```
+
+### Scanner configuration reference
+
+| Config key | Type | Description |
+|---|---|---|
+| `delay` | float | Sleep multiplier between scanned objects (default: `10.0`). `0` = full speed (not recommended in production). |
+| `max_wait` | duration | Maximum wait time between operations (default: `15s`) |
+| `cycle` | duration | Duration between complete scanner cycles |
+
+The scanner adapts dynamically to system load and pauses automatically when the system is under heavy load. Increasing `delay` reduces resource usage but delays updates to usage metrics, ILM enforcement, and healing detection.
+
+## On-demand healing with mc admin heal
+
+For immediate healing after drive replacement or data corruption events, use `mc admin heal`.
+
+<Steps>
+  <Step title="Heal the entire deployment">
+    ```bash
+    mc admin heal myminio/
+    ```
+
+    Initiates healing across all buckets and objects. This is typically run after replacing one or more drives.
+  </Step>
+  <Step title="Heal a specific bucket">
+    ```bash
+    mc admin heal myminio/my-bucket
+    ```
+  </Step>
+  <Step title="Heal a specific object">
+    ```bash
+    mc admin heal myminio/my-bucket/path/to/object
+    ```
+  </Step>
+  <Step title="Perform a deep scan (bitrot check)">
+    ```bash
+    mc admin heal --scan deep myminio/
+    ```
+
+    Deep scan reads every byte of every shard to verify data integrity. It is significantly more I/O intensive than a normal heal scan.
+  </Step>
+  <Step title="Dry run">
+    ```bash
+    mc admin heal --dry-run myminio/my-bucket
+    ```
+
+    Reports what would be healed without making any changes. Useful for assessing the scope of damage before committing to a full heal.
+  </Step>
+</Steps>
+
+## Scan modes
+
+| Flag | Description |
+|---|---|
+| (default) | Normal scan — checks for missing or corrupt shards using metadata only |
+| `--scan deep` | Deep scan — reads all shard data to verify bitrot integrity |
+
+<Warning>
+Deep healing reads every byte on every drive. Run it during low-traffic periods on large deployments.
+</Warning>
+
+## Healing after drive replacement
+
+After replacing a failed drive, MinIO detects the new drive and begins healing objects that had shards on the replaced drive. The background healer handles this automatically, but you can accelerate recovery:
+
+```bash
+# Temporarily increase healing speed after drive replacement
+mc admin config set myminio/ heal max_sleep=50ms max_io=200
+
+# Monitor healing progress
+mc admin heal --verbose myminio/
+```
+
+Once healing is complete, restore the default healing settings:
+
+```bash
+mc admin config set myminio/ heal max_sleep=250ms max_io=100
+```
+
+## Healing metrics
+
+Track healing progress using these Prometheus metrics:
+
+| Metric | Description |
+|---|---|
+| `minio_heal_objects_heal_total` | Objects healed in the current self-healing run |
+| `minio_heal_objects_errors_total` | Objects for which healing failed in the current run |
+| `minio_heal_objects_total` | Objects scanned in the current self-healing run |
+| `minio_heal_time_last_activity_nano_seconds` | Time elapsed since the last self-healing activity |
+| `minio_node_scanner_bucket_scans_finished` | Total bucket scans completed since server start |
+| `minio_node_scanner_bucket_scans_started` | Total bucket scans started since server start |
+| `minio_node_scanner_objects_scanned` | Total unique objects scanned since server start |
+| `minio_node_scanner_versions_scanned` | Total object versions scanned since server start |
+| `minio_cluster_health_erasure_set_healing_drives` | Count of drives currently being healed in each erasure set |
+
+<Tip>
+Alert on `minio_heal_objects_errors_total` increasing over time — this indicates objects that cannot be healed because too many shards are lost (below read quorum).
+</Tip>
+
+## Interpreting heal results
+
+Each healed object is classified with an outcome:
+
+| Result | Meaning |
+|---|---|
+| `healthy` | Object is intact — no healing required |
+| `repaired` | Object had missing/corrupted shards; successfully repaired |
+| `dangling` | Object has too few shards to reconstruct and cannot be healed |
+
+Dangling objects have lost more shards than can be tolerated by the erasure set's read quorum. These represent permanent data loss and cannot be recovered without a backup.

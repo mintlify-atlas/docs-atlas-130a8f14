@@ -1,0 +1,150 @@
+---
+title: "Kubernetes deployment"
+description: "Deploy MinIO on Kubernetes using the Operator or Helm charts"
+---
+
+There are two paths for deploying MinIO on Kubernetes: the **MinIO Kubernetes Operator** (officially supported) and the **community Helm chart** (community maintained).
+
+<CardGroup cols={2}>
+  <Card title="MinIO Operator" icon="shield-check" href="https://github.com/minio/operator">
+    Officially maintained by MinIO. Recommended for production deployments. Manages MinIO Tenants as Kubernetes custom resources.
+  </Card>
+  <Card title="Community Helm Chart" icon="helm" href="https://github.com/minio/minio/tree/master/helm/minio">
+    Community built and maintained. Suitable for simpler setups and environments where the Operator is not available.
+  </Card>
+</CardGroup>
+
+## MinIO Operator
+
+The MinIO Kubernetes Operator manages MinIO deployments (called Tenants) as first-class Kubernetes objects. It handles provisioning, upgrades, and day-2 operations.
+
+For installation and usage documentation, see the [MinIO Operator repository](https://github.com/minio/operator) and the [Deploy Operator with Helm](https://docs.min.io/community/minio-object-store/operations/deployments/k8s-deploy-operator-helm-on-kubernetes.html) guide.
+
+<Note>
+  MinIO strongly recommends the Operator for production deployments. The community Helm chart does not provide the same operational guarantees.
+</Note>
+
+## Community Helm chart
+
+The community Helm chart bootstraps a MinIO cluster on any Kubernetes cluster using Helm.
+
+### Prerequisites
+
+- Helm CLI with a configured Kubernetes cluster
+- PersistentVolume provisioner support (MinIO recommends [direct-csi](https://github.com/minio/direct-csi))
+- Kubernetes v1.19 or later
+
+### Add the MinIO Helm repository
+
+```sh
+helm repo add minio https://charts.min.io/
+```
+
+### Install the chart
+
+<Tabs>
+  <Tab title="Production (distributed)">
+    The default chart mode is `distributed` with 16 replicas and 1 drive per node.
+
+    ```sh
+    helm install \
+      --namespace minio \
+      --create-namespace \
+      --set rootUser=your-access-key,rootPassword=your-secret-key \
+      --generate-name \
+      minio/minio
+    ```
+  </Tab>
+  <Tab title="Standalone (toy setup)">
+    For testing and development, deploy a minimal single-replica instance without persistent storage:
+
+    ```sh
+    helm install \
+      --set resources.requests.memory=512Mi \
+      --set replicas=1 \
+      --set persistence.enabled=false \
+      --set mode=standalone \
+      --set rootUser=your-access-key,rootPassword=your-secret-key \
+      --generate-name \
+      minio/minio
+    ```
+
+    <Warning>
+      Disabling persistence (`persistence.enabled=false`) means all data is lost when the pod restarts. Do not use this configuration for any data you need to keep.
+    </Warning>
+  </Tab>
+  <Tab title="Values file">
+    Provide a custom values file for repeatable installs:
+
+    ```sh
+    helm install --name my-release -f values.yaml minio/minio
+    ```
+  </Tab>
+</Tabs>
+
+### Key configuration values
+
+The following values from `values.yaml` control the most important aspects of the deployment.
+
+| Value | Description | Default |
+|---|---|---|
+| `mode` | `distributed` or `standalone` | `distributed` |
+| `replicas` | Number of MinIO pods | `16` |
+| `drivesPerNode` | Number of drives per pod | `1` |
+| `pools` | Number of server pools | `1` |
+| `rootUser` | Root access key | *(generated)* |
+| `rootPassword` | Root secret key | *(generated)* |
+| `persistence.enabled` | Enable PersistentVolumeClaims | `true` |
+| `persistence.size` | Size of each PVC | `500Gi` |
+| `persistence.storageClass` | StorageClass for PVCs | *(cluster default)* |
+| `resources.requests.memory` | Memory request per pod | `16Gi` |
+
+### Persistent volumes
+
+By default, the chart creates one PersistentVolumeClaim per drive. Your cluster must have a PV provisioner available. To use a specific StorageClass:
+
+```sh
+helm install --set persistence.size=1Ti minio/minio
+```
+
+To use an existing PVC:
+
+```sh
+helm install --set persistence.existingClaim=my-existing-pvc minio/minio
+```
+
+To disable persistence entirely (data is lost on pod restart):
+
+```sh
+helm install --set persistence.enabled=false minio/minio
+```
+
+### Use an existing secret for credentials
+
+Create a Kubernetes Secret with your credentials, then reference it during installation:
+
+```sh
+kubectl create secret generic my-minio-secret \
+  --from-literal=rootUser=your-access-key \
+  --from-literal=rootPassword=your-secret-key
+
+helm install --set existingSecret=my-minio-secret minio/minio
+```
+
+### Upgrade the chart
+
+```sh
+helm get values my-release > old_values.yaml
+# Edit old_values.yaml, e.g. update image.tag
+helm upgrade -f old_values.yaml my-release minio/minio
+```
+
+### Uninstall the chart
+
+```sh
+helm uninstall my-release
+```
+
+<Note>
+  The community Helm chart is community built, maintained, and supported. MinIO does not guarantee support for bugs, feature requests, or updates referencing this chart.
+</Note>

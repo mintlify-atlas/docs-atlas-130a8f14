@@ -1,0 +1,149 @@
+---
+title: "Storage classes"
+description: "Configure erasure coding parity levels with MinIO storage classes"
+---
+
+MinIO supports two storage classes that control how many parity drive shards are created for each object. Choosing the right storage class lets you balance data redundancy against usable storage capacity.
+
+## Overview
+
+When MinIO writes an object in erasure coding mode, it splits the object into **data shards** and **parity shards**. Parity shards allow the object to be reconstructed even if some drives are unavailable. The storage class determines how many parity shards to create.
+
+You set the storage class per-object using the `x-amz-storage-class` request header on `PutObject` calls.
+
+<Note>
+Storage class configuration only applies to erasure-coded deployments (multi-drive). Single-drive deployments do not use parity and ignore storage class settings.
+</Note>
+
+## Available storage classes
+
+### STANDARD
+
+The default storage class. Provides the highest level of redundancy.
+
+- Default parity depends on the erasure set size:
+
+| Erasure set size | Default parity |
+|---|---|
+| 5 or fewer drives | EC:2 |
+| 6–7 drives | EC:3 |
+| 8 or more drives | EC:4 |
+
+- Parity must be greater than or equal to 2.
+- Parity cannot exceed N/2 (where N is the total number of drives in the erasure set).
+- If `REDUCED_REDUNDANCY` parity is also configured, `STANDARD` parity must be strictly greater.
+
+### REDUCED_REDUNDANCY (RRS)
+
+Provides lower redundancy than `STANDARD` in exchange for better storage utilization.
+
+- Default parity: `EC:1`
+- Must be less than `STANDARD` parity (or less than N/2 if `STANDARD` is not set).
+
+<Warning>
+`REDUCED_REDUNDANCY` with `EC:1` means the object becomes unrecoverable if any single drive in the erasure set fails simultaneously with another failure. Only use RRS for data that can be regenerated or for cost-sensitive non-critical workloads.
+</Warning>
+
+## Storage usage
+
+The number of parity drives directly affects how much space an object consumes. The approximate storage usage ratio is:
+
+```
+Storage usage ratio = Total drives (N) ÷ Data drives (D)
+```
+
+For a 16-drive deployment:
+
+| Data drives (D) | Parity drives (P) | Storage usage ratio |
+|---|---|---|
+| 8 | 8 (EC:8) | 2.00× |
+| 9 | 7 (EC:7) | 1.79× |
+| 10 | 6 (EC:6) | 1.60× |
+| 11 | 5 (EC:5) | 1.45× |
+| 12 | 4 (EC:4) | 1.34× |
+| 13 | 3 (EC:3) | 1.23× |
+| 14 | 2 (EC:2) | 1.14× |
+
+For example, a 100 MiB file stored with EC:4 on a 16-drive cluster uses approximately 134 MiB of raw drive space.
+
+## Configuring storage classes
+
+### Via environment variables
+
+Set parity levels before starting the MinIO server:
+
+```bash
+export MINIO_STORAGE_CLASS_STANDARD=EC:4
+export MINIO_STORAGE_CLASS_RRS=EC:2
+minio server /mnt/data{1...16}
+```
+
+<ParamField body="MINIO_STORAGE_CLASS_STANDARD" type="string">
+  Parity count for the `STANDARD` storage class. Format: `EC:<n>`.
+
+  Example: `EC:4` creates 4 parity shards per object.
+</ParamField>
+
+<ParamField body="MINIO_STORAGE_CLASS_RRS" type="string">
+  Parity count for the `REDUCED_REDUNDANCY` storage class. Format: `EC:<n>`.
+
+  Example: `EC:2` creates 2 parity shards per object.
+</ParamField>
+
+### Via mc admin config
+
+Storage class can also be updated at runtime without a server restart:
+
+```bash
+# Set STANDARD to EC:4 parity
+mc admin config set alias/ storage_class standard=EC:4
+
+# Set REDUCED_REDUNDANCY to EC:2 parity
+mc admin config set alias/ storage_class rrs=EC:2
+
+# View current storage class settings
+mc admin config get alias/ storage_class
+```
+
+## Setting storage class per object
+
+Specify the storage class when uploading an object using the `x-amz-storage-class` header:
+
+<Tabs>
+  <Tab title="curl">
+    ```bash
+    curl -X PUT "http://localhost:9000/my-bucket/my-object" \
+      -H "x-amz-storage-class: REDUCED_REDUNDANCY" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      --data-binary @file.dat
+    ```
+  </Tab>
+  <Tab title="minio-go">
+    ```go
+    _, err := s3Client.PutObject(
+        context.Background(),
+        "my-bucket",
+        "my-object",
+        reader,
+        objectSize,
+        minio.PutObjectOptions{
+            ContentType:  "application/octet-stream",
+            StorageClass: "REDUCED_REDUNDANCY",
+        },
+    )
+    ```
+  </Tab>
+  <Tab title="AWS CLI">
+    ```bash
+    aws s3 cp file.dat s3://my-bucket/my-object \
+      --storage-class REDUCED_REDUNDANCY \
+      --endpoint-url http://localhost:9000
+    ```
+  </Tab>
+</Tabs>
+
+## Behavior notes
+
+- If `MINIO_STORAGE_CLASS_STANDARD` is configured and a `PutObject` request does not include `x-amz-storage-class`, MinIO applies `STANDARD` parity automatically.
+- If no storage class is configured and a request includes `x-amz-storage-class: STANDARD` or `x-amz-storage-class: REDUCED_REDUNDANCY`, MinIO uses its default parity values based on the erasure set size.
+- Storage class configuration is per erasure set. All objects in the same set share the same available parity levels.

@@ -1,0 +1,194 @@
+---
+title: "Server flags"
+description: "Command-line flags for the minio server command"
+---
+
+Start the MinIO server with the `minio server` command, followed by one or more drive or endpoint paths.
+
+```bash
+minio server [FLAGS] DIR1 [DIR2 ...]
+minio server [FLAGS] DIR{1...64}
+minio server [FLAGS] http://node{1...4}.example.com/mnt/data{1...4}
+```
+
+All flags can also be set via the corresponding environment variable listed in each flag's description.
+
+## Global flags
+
+The following flags apply to all MinIO commands, not just `server`.
+
+<ParamField body="--certs-dir, -S" type="string" default="~/.minio/certs">
+  Path to the directory containing TLS certificates. MinIO expects the following files in this directory:
+
+  - `private.key` — server private key
+  - `public.crt` — server certificate chain
+  - `CAs/` — trusted CA certificates (optional)
+
+  ```bash
+  minio server --certs-dir /etc/minio/certs /data
+  ```
+</ParamField>
+
+<ParamField body="--quiet" type="boolean" default="false">
+  Suppresses the startup banner and informational messages. Only errors are printed to stderr.
+
+  ```bash
+  minio server --quiet /data
+  ```
+</ParamField>
+
+<ParamField body="--anonymous" type="boolean" default="false">
+  Redacts sensitive information (access keys, IP addresses) from log and trace output. Useful when sharing logs with support.
+
+  ```bash
+  minio server --anonymous /data
+  ```
+</ParamField>
+
+<ParamField body="--json" type="boolean" default="false">
+  Emits all server log output as newline-delimited JSON instead of human-readable text. Useful for log aggregation pipelines.
+
+  ```bash
+  minio server --json /data
+  ```
+</ParamField>
+
+## Server flags
+
+<ParamField body="--config" type="string" default="">
+  Path to a YAML configuration file. When set, MinIO reads server address, credentials, pool definitions, and FTP/SFTP options from the file. The environment variable is `MINIO_CONFIG`.
+
+  ```yaml
+  # Example config.yaml
+  version: v2
+  address: ":9000"
+  console-address: ":9001"
+  pools:
+    - args:
+        - /mnt/data{1...4}
+  ```
+
+  ```bash
+  minio server --config /etc/minio/config.yaml
+  ```
+</ParamField>
+
+<ParamField body="--address" type="string" default=":9000">
+  The `ADDRESS:PORT` to bind the S3 API to. Accepts an IP address or hostname. Use `:9000` to bind to all interfaces.
+
+  The environment variable is `MINIO_ADDRESS`.
+
+  ```bash
+  minio server --address 192.168.1.10:9000 /data
+  minio server --address :9000 /data
+  ```
+</ParamField>
+
+<ParamField body="--console-address" type="string" default="random port">
+  The `ADDRESS:PORT` to bind the embedded MinIO Console (web UI) to. If not set, MinIO binds the console to a random available port and prints the address at startup.
+
+  The environment variable is `MINIO_CONSOLE_ADDRESS`.
+
+  ```bash
+  minio server --console-address :9001 /data
+  ```
+</ParamField>
+
+<ParamField body="--ftp" type="string[]">
+  Enables and configures an FTP or FTPS server. Pass the flag multiple times to provide several options.
+
+  Supported sub-options:
+
+  | Sub-option | Description |
+  |---|---|
+  | `address=HOST:PORT` | Address and port for the FTP listener (e.g. `:8021`) |
+  | `passive-port-range=START-END` | Passive port range for data connections (e.g. `30000-40000`) |
+  | `tls-private-key=PATH` | Path to TLS private key for FTPS |
+  | `tls-public-cert=PATH` | Path to TLS certificate for FTPS |
+
+  ```bash
+  minio server \
+    --ftp="address=:8021" \
+    --ftp="passive-port-range=30000-40000" \
+    /data
+  ```
+</ParamField>
+
+<ParamField body="--sftp" type="string[]">
+  Enables and configures an SFTP server using SSH. Pass the flag multiple times to provide several options.
+
+  Supported sub-options:
+
+  | Sub-option | Description |
+  |---|---|
+  | `address=HOST:PORT` | Address and port for the SFTP listener (e.g. `:8022`) |
+  | `ssh-private-key=PATH` | Path to the SSH host private key |
+
+  ```bash
+  minio server \
+    --sftp="address=:8022" \
+    --sftp="ssh-private-key=/home/minio/.ssh/id_rsa" \
+    /data
+  ```
+</ParamField>
+
+## Usage examples
+
+<AccordionGroup>
+  <Accordion title="Single-node, single-drive">
+    ```bash
+    export MINIO_ROOT_USER=minioadmin
+    export MINIO_ROOT_PASSWORD=minioadmin
+    minio server /mnt/data
+    ```
+  </Accordion>
+
+  <Accordion title="Single-node, multiple drives (erasure coding)">
+    ```bash
+    export MINIO_ROOT_USER=minioadmin
+    export MINIO_ROOT_PASSWORD=minioadmin
+    minio server /mnt/data{1...8}
+    ```
+  </Accordion>
+
+  <Accordion title="Distributed deployment">
+    Run the following command on all four nodes:
+
+    ```bash
+    export MINIO_ROOT_USER=minioadmin
+    export MINIO_ROOT_PASSWORD=minioadmin
+    minio server \
+      http://node{1...4}.example.com/mnt/export{1...4}
+    ```
+  </Accordion>
+
+  <Accordion title="Distributed with FTP and SFTP">
+    ```bash
+    minio server \
+      http://node{1...4}.example.com/mnt/export{1...4} \
+      --ftp="address=:8021" \
+      --ftp="passive-port-range=30000-40000" \
+      --sftp="address=:8022" \
+      --sftp="ssh-private-key=${HOME}/.ssh/id_rsa"
+    ```
+  </Accordion>
+
+  <Accordion title="TLS with custom certificate directory">
+    ```bash
+    minio server \
+      --certs-dir /etc/ssl/minio \
+      --address :443 \
+      --console-address :9001 \
+      /mnt/data{1...8}
+    ```
+  </Accordion>
+
+  <Accordion title="JSON logging for log aggregation">
+    ```bash
+    minio server \
+      --json \
+      --quiet \
+      /mnt/data{1...8} 2>&1 | logger -t minio
+    ```
+  </Accordion>
+</AccordionGroup>

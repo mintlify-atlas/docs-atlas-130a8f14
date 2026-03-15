@@ -1,0 +1,232 @@
+---
+title: "Server configuration"
+description: "Configure MinIO using environment variables and the mc admin config command"
+---
+
+MinIO stores all server configuration as part of the deployment itself — config data is erasure coded on MinIO storage, not in a flat config file. On a fresh deployment MinIO automatically generates a default configuration. If KMS is configured, MinIO also encrypts all configuration, IAM, and policy content at rest.
+
+Configuration can be changed at runtime using `mc admin config`. Some subsystems support live reconfiguration without a server restart.
+
+## Accessing configuration
+
+Use the `mc admin config` command to view and modify configuration.
+
+<CodeGroup>
+
+```bash List all config keys
+mc admin config get myminio/
+```
+
+```bash Get help for a specific key
+mc admin config set myminio/ etcd
+```
+
+```bash Set a config value
+mc admin config set myminio/ api requests_max=1000
+```
+
+```bash Show environment variable equivalents
+mc admin config set myminio/ etcd --env
+```
+
+</CodeGroup>
+
+Every config key is self-documenting. Running `mc admin config set alias/ <key>` without arguments prints all available arguments and their types.
+
+## Credentials
+
+Root credentials must be configured via environment variables. They cannot be set through `mc admin config`.
+
+```bash
+export MINIO_ROOT_USER=minioadmin
+export MINIO_ROOT_PASSWORD=minioadmin
+minio server /data
+```
+
+<Warning>
+Change the default root credentials before exposing any MinIO deployment to a network. Weak credentials on the root account are a critical security risk.
+</Warning>
+
+| Variable | Type | Description |
+|---|---|---|
+| `MINIO_ROOT_USER` | string | Root (admin) username |
+| `MINIO_ROOT_PASSWORD` | string | Root (admin) password |
+
+## Site identity
+
+Site name and region label the deployment for identification in logs, metrics, and federated setups.
+
+```bash
+export MINIO_SITE_NAME="sfo-rack-1"
+export MINIO_SITE_REGION="us-west-1"
+minio server /data
+```
+
+| Variable | Config key | Type | Description |
+|---|---|---|---|
+| `MINIO_SITE_NAME` | `site name` | string | Human-readable name for the site, e.g. `cal-rack0` |
+| `MINIO_SITE_REGION` | `site region` | string | Location label, e.g. `us-west-1` |
+| `MINIO_SITE_COMMENT` | `site comment` | sentence | Optional free-text comment |
+
+## Storage volumes
+
+Specify storage paths using the `MINIO_VOLUMES` environment variable. For distributed deployments, list all drive paths separated by spaces.
+
+```bash
+# Single node, multiple drives
+export MINIO_VOLUMES="/data{1...4}"
+
+# Distributed deployment
+export MINIO_VOLUMES="http://minio{1...4}/data{1...4}"
+
+minio server
+```
+
+<Note>
+`MINIO_VOLUMES` is evaluated as a shell expansion, so brace expressions like `{1...4}` expand to multiple paths.
+</Note>
+
+## Console address
+
+By default MinIO binds the embedded console to a random available port. To fix the port, set `MINIO_CONSOLE_ADDRESS`.
+
+```bash
+export MINIO_CONSOLE_ADDRESS=":9001"
+minio server /data
+```
+
+## Storage class
+
+MinIO storage classes define the erasure-coding parity for objects. By default, standard parity is `N/2` and reduced redundancy (RRS) parity is `2`.
+
+```bash
+export MINIO_STORAGE_CLASS_STANDARD="EC:4"
+export MINIO_STORAGE_CLASS_RRS="EC:2"
+minio server /data
+```
+
+| Variable | Config key | Type | Description |
+|---|---|---|---|
+| `MINIO_STORAGE_CLASS_STANDARD` | `storage_class standard` | string | Parity for standard storage class, e.g. `EC:4` |
+| `MINIO_STORAGE_CLASS_RRS` | `storage_class rrs` | string | Parity for reduced redundancy storage class, e.g. `EC:2` |
+
+## API throttling and behavior
+
+The `api` subsystem controls HTTP request throttling, CORS, replication workers, and other global API behaviors. This subsystem supports **live reconfiguration** — changes take effect without a server restart (unless configured via environment variables).
+
+```bash
+# Set max concurrent requests
+mc admin config set myminio/ api requests_max=1000
+
+# Adjust replication workers
+mc admin config set myminio/ api replication_max_workers=250
+```
+
+| Variable | Config key | Default | Description |
+|---|---|---|---|
+| `MINIO_API_REQUESTS_MAX` | `requests_max` | `auto` | Maximum number of concurrent requests |
+| `MINIO_API_CLUSTER_DEADLINE` | `cluster_deadline` | `10s` | Deadline for cluster readiness check |
+| `MINIO_API_CORS_ALLOW_ORIGIN` | `cors_allow_origin` | `*` | Comma-separated list of allowed CORS origins |
+| `MINIO_API_LIST_QUORUM` | `list_quorum` | `strict` | Quorum for list operations: `optimal`, `reduced`, `disk`, `strict`, `auto` |
+| `MINIO_API_REPLICATION_PRIORITY` | `replication_priority` | `auto` | Replication priority |
+| `MINIO_API_REPLICATION_MAX_WORKERS` | `replication_max_workers` | `500` | Maximum number of replication workers |
+| `MINIO_API_STALE_UPLOADS_EXPIRY` | `stale_uploads_expiry` | `24h` | Expiry time for stale multipart uploads |
+| `MINIO_API_DELETE_CLEANUP_INTERVAL` | `delete_cleanup_interval` | `5m` | Interval to permanently delete objects from `.trash` |
+| `MINIO_API_ODIRECT` | `odirect` | `on` | Enable `O_DIRECT` for writes. Do not disable without testing. |
+| `MINIO_API_ROOT_ACCESS` | `root_access` | `on` | Turn `off` to disable root credential access for all API calls |
+| `MINIO_API_SYNC_EVENTS` | `sync_events` | `off` | Enable synchronous bucket notifications |
+| `MINIO_API_OBJECT_MAX_VERSIONS` | `object_max_versions` | unlimited | Maximum allowed versions per object |
+
+## Certificate directory
+
+TLS certificates are loaded from `${HOME}/.minio/certs` by default. Place `private.key` and `public.crt` in that directory to enable HTTPS.
+
+```
+~/.minio/
+└─ certs/
+   ├─ CAs/
+   ├─ private.key
+   └─ public.crt
+```
+
+To use a custom certificate directory:
+
+```bash
+minio server --certs-dir /etc/minio/certs /data
+```
+
+## Domain and virtual-host style access
+
+By default MinIO uses path-style requests (`http://host/bucket/object`). Set `MINIO_DOMAIN` to enable virtual-host-style requests (`http://bucket.host/object`).
+
+```bash
+export MINIO_DOMAIN=minio.example.com
+minio server /data
+```
+
+Multiple domains are supported as a comma-separated list:
+
+```bash
+export MINIO_DOMAIN=minio.example.com,s3.example.com
+```
+
+## Browser console
+
+The embedded web console is enabled by default. Disable it with `MINIO_BROWSER`:
+
+```bash
+export MINIO_BROWSER=off
+minio server /data
+```
+
+## Etcd federation
+
+MinIO can store IAM assets in etcd for federated multi-cluster deployments.
+
+```bash
+export MINIO_ETCD_ENDPOINTS="http://etcd1:2379,http://etcd2:2379"
+minio server /data
+```
+
+| Variable | Config key | Type | Description |
+|---|---|---|---|
+| `MINIO_ETCD_ENDPOINTS` | `etcd endpoints` | csv | Comma-separated etcd endpoints |
+| `MINIO_ETCD_PATH_PREFIX` | `etcd path_prefix` | path | Namespace prefix to isolate tenants |
+| `MINIO_ETCD_COREDNS_PATH` | `etcd coredns_path` | path | Shared bucket DNS records path (default: `/skydns`) |
+| `MINIO_ETCD_CLIENT_CERT` | `etcd client_cert` | path | Client cert for mTLS authentication |
+| `MINIO_ETCD_CLIENT_CERT_KEY` | `etcd client_cert_key` | path | Client cert key for mTLS authentication |
+
+<Note>
+If `path_prefix` is set, MinIO treats IAM assets as isolated tenant namespaces and does not federate bucket lookups. Only set this for tenant isolation, not standard federated deployments.
+</Note>
+
+## Bucket notification targets
+
+MinIO can publish bucket notifications to the following targets. Configure each target individually using `mc admin config set`.
+
+| Key | Description |
+|---|---|
+| `notify_webhook` | Publish to webhook endpoints |
+| `notify_amqp` | Publish to AMQP (RabbitMQ) endpoints |
+| `notify_kafka` | Publish to Kafka endpoints |
+| `notify_mqtt` | Publish to MQTT endpoints |
+| `notify_nats` | Publish to NATS endpoints |
+| `notify_nsq` | Publish to NSQ endpoints |
+| `notify_mysql` | Publish to MySQL databases |
+| `notify_postgres` | Publish to PostgreSQL databases |
+| `notify_elasticsearch` | Publish to Elasticsearch endpoints |
+| `notify_redis` | Publish to Redis datastores |
+
+## Dynamic subsystems
+
+The following subsystems support live reconfiguration without a server restart. Changes applied via `mc admin config set` take effect immediately.
+
+<Warning>
+Dynamic reconfiguration is only available when configuration is set via `mc admin config`, not via environment variables. Environment-variable-based config is static and requires a restart to change.
+</Warning>
+
+| Subsystem | Description |
+|---|---|
+| `api` | HTTP API throttling, authentication types, and global API behaviors |
+| `heal` | Object healing frequency and bitrot verification |
+| `scanner` | Namespace scanning for usage calculation, lifecycle, and healing |

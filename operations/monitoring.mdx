@@ -1,0 +1,194 @@
+---
+title: "Monitoring and logging"
+description: "Monitor MinIO with health checks, audit logging, and console logs"
+---
+
+MinIO exposes health check endpoints and logging infrastructure to integrate with external monitoring, orchestration, and log aggregation systems.
+
+## Health check endpoints
+
+MinIO provides unauthenticated health check endpoints that orchestrators like Kubernetes can use for liveness and readiness probes, and that load balancers can use for routing decisions.
+
+### Liveness probe
+
+`GET /minio/health/live`
+
+Returns `200 OK` when the MinIO process is running and the object layer is initialized. Does not contact external systems (KMS, etcd), so a failing liveness check does not cascade from external dependency failures. In Kubernetes, a failed liveness check triggers a pod restart.
+
+```yaml Kubernetes liveness probe
+livenessProbe:
+  httpGet:
+    path: /minio/health/live
+    port: 9000
+    scheme: HTTP
+  initialDelaySeconds: 120
+  periodSeconds: 30
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+```
+
+### Readiness probe
+
+`GET /minio/health/ready`
+
+Returns `200 OK` when MinIO is ready to serve S3 requests. Checks that the object layer, bucket metadata system, and IAM system are initialized. Also checks connectivity to KMS and etcd if those are configured. In Kubernetes, a failed readiness check stops traffic routing to the pod without triggering a restart.
+
+```yaml Kubernetes readiness probe
+readinessProbe:
+  httpGet:
+    path: /minio/health/ready
+    port: 9000
+    scheme: HTTP
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 10
+  successThreshold: 1
+  failureThreshold: 3
+```
+
+### Cluster write probe
+
+`GET /minio/health/cluster`
+
+Returns `200 OK` if the cluster has write quorum. Returns `503 Service Unavailable` if write quorum is lost. The response includes the `X-Minio-Write-Quorum` header.
+
+```bash
+curl -I http://minio1:9000/minio/health/cluster
+```
+
+Example response when write quorum is lost:
+
+```
+HTTP/1.1 503 Service Unavailable
+X-Minio-Write-Quorum: 3
+Content-Length: 0
+```
+
+### Cluster read probe
+
+`GET /minio/health/cluster/read`
+
+Returns `200 OK` if the cluster has read quorum. Returns `503 Service Unavailable` if read quorum is lost. The response includes the `X-Minio-Read-Quorum` header.
+
+```bash
+curl -I http://minio1:9000/minio/health/cluster/read
+```
+
+### Maintenance check
+
+Add `?maintenance=true` to the cluster probe to check whether a node can be safely taken down without losing high availability. Returns `412 Precondition Failed` if taking the node down would break quorum, or `200 OK` if the removal is safe.
+
+```bash
+curl -I "http://minio1:9000/minio/health/cluster?maintenance=true"
+```
+
+Example response indicating the node cannot be safely removed:
+
+```
+HTTP/1.1 412 Precondition Failed
+X-Minio-Write-Quorum: 3
+Content-Length: 0
+```
+
+<Tip>
+Use the maintenance probe in automation scripts before draining a node or taking it offline for hardware maintenance.
+</Tip>
+
+## Health check response headers
+
+| Header | Description |
+|---|---|
+| `X-Minio-Write-Quorum` | Current write quorum for the cluster |
+| `X-Minio-Read-Quorum` | Current read quorum for the cluster |
+| `X-Minio-Healing-Drives` | Number of drives currently being healed (present only when > 0) |
+| `X-Minio-Storage-Class-Defaults` | Whether default storage class settings are in use |
+| `X-Minio-Server-Status` | Status string when the server is unavailable (e.g. `offline`, `iam-offline`, `bucket-metadata-offline`) |
+
+## Audit logging
+
+Audit logs record every API request made to MinIO — the requesting identity, the action, the bucket/object affected, and the outcome. Configure audit log delivery to HTTP webhook targets.
+
+```bash
+# Configure an audit log webhook target (target ID: 1)
+mc admin config set myminio/ audit_webhook:1 \
+  endpoint="https://audit.example.com/minio" \
+  auth_token="Bearer <token>"
+```
+
+Multiple audit webhook targets are supported by using different IDs:
+
+```bash
+mc admin config set myminio/ audit_webhook:2 \
+  endpoint="https://siem.example.com/events"
+```
+
+<Note>
+Audit webhook delivery is asynchronous. Track delivery health using the `/minio/metrics/v3/audit` metrics endpoint, which reports `minio_audit_failed_messages`, `minio_audit_total_messages`, and `minio_audit_target_queue_length`.
+</Note>
+
+## Logger webhook
+
+MinIO application logs (server events, errors, and warnings) can be forwarded to HTTP webhook endpoints using the `logger_webhook` subsystem.
+
+```bash
+mc admin config set myminio/ logger_webhook:1 \
+  endpoint="https://logs.example.com/minio" \
+  auth_token="Bearer <token>"
+```
+
+Logger webhook health is exposed through the `/minio/metrics/v3/logger/webhook` endpoint, reporting queue length and message counts per target.
+
+## Console logging
+
+MinIO writes operational logs to stdout by default. When running as a systemd service, logs are available via `journalctl`:
+
+```bash
+journalctl -u minio -f
+```
+
+For container deployments, use the container runtime log commands:
+
+```bash
+# Docker
+docker logs -f minio
+
+# Kubernetes
+kubectl logs -f -l app=minio -n minio
+```
+
+## mc admin trace
+
+For real-time request tracing, use `mc admin trace`:
+
+```bash
+# Trace all S3 API calls
+mc admin trace myminio/
+
+# Trace only errors
+mc admin trace --errors myminio/
+
+# Trace with request/response body
+mc admin trace --verbose myminio/
+```
+
+## Bucket notifications
+
+MinIO can publish event notifications to external targets when objects are created, deleted, or accessed. Supported targets include Kafka, AMQP, MQTT, NATS, NSQ, webhooks, PostgreSQL, MySQL, Elasticsearch, and Redis.
+
+Configure notification targets using `mc admin config set` with the appropriate `notify_*` key, then add event subscriptions to buckets:
+
+```bash
+# Configure a Kafka notification target
+mc admin config set myminio/ notify_kafka:1 \
+  brokers="kafka1:9092,kafka2:9092" \
+  topic="minio-events"
+
+# Restart MinIO to load the new config
+mc admin service restart myminio/
+
+# Subscribe a bucket to put and delete events
+mc event add myminio/my-bucket \
+  arn:minio:sqs::1:kafka \
+  --event put,delete
+```

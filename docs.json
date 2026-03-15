@@ -1,122 +1,114 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "MinIO",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#c42c47",
+    "light": "#e7053e",
+    "dark": "#e47a9c"
   },
   "favicon": "/favicon.svg",
+  "logo": {
+    "light": "https://media.brand.dev/2105d9ff-dffa-48ef-a7be-830a38514a32.png",
+    "dark": "https://media.brand.dev/8a661eaa-4a07-4ee6-af59-e82f28648b60.png"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/minio/minio"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/minio/minio"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "installation"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Deployment",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "deployment/standalone",
+              "deployment/distributed",
+              "deployment/docker",
+              "deployment/kubernetes"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Core Concepts",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "concepts/erasure-coding",
+              "concepts/versioning",
+              "concepts/object-lifecycle",
+              "concepts/replication",
+              "concepts/site-replication"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Security",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "security/overview",
+              "security/tls",
+              "security/encryption",
+              "security/iam",
+              "security/sts"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/configuration",
+              "operations/monitoring",
+              "operations/metrics",
+              "operations/batch-jobs",
+              "operations/decommissioning",
+              "operations/healing"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/bucket-notifications",
+              "features/object-lambda",
+              "features/ftp-sftp",
+              "features/compression",
+              "features/tiering"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "API Reference",
             "pages": [
-              "api-reference/introduction"
+              "reference/s3-api",
+              "reference/admin-api",
+              "reference/sts-api"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Configuration",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "reference/environment-variables",
+              "reference/server-flags",
+              "reference/storage-classes"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

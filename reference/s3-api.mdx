@@ -1,0 +1,532 @@
+---
+title: "S3 API reference"
+description: "Complete reference for MinIO's S3-compatible API"
+---
+
+MinIO implements the Amazon S3 API. Any S3-compatible SDK, tool, or application works with MinIO without modification. This page documents the HTTP routes registered by MinIO, grouped by operation category.
+
+## Authentication
+
+All requests must be authenticated using one of the following methods:
+
+<AccordionGroup>
+  <Accordion title="AWS Signature Version 4 (recommended)">
+    Signature Version 4 is the current AWS authentication standard. Include the following headers:
+
+    - `Authorization` — constructed HMAC-SHA256 signature
+    - `x-amz-date` — request timestamp in ISO 8601 format
+    - `x-amz-content-sha256` — SHA-256 hash of the request payload
+
+    ```bash
+    curl -X GET "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 Credential=ACCESS_KEY/20240101/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=COMPUTED_SIGNATURE" \
+      -H "x-amz-date: 20240101T000000Z" \
+      -H "x-amz-content-sha256: e3b0c44298fc1c149afbf4c8996fb924"
+    ```
+  </Accordion>
+  <Accordion title="AWS Signature Version 2 (legacy)">
+    Signature Version 2 is supported for backwards compatibility. MinIO accepts both V2 and V4 signatures, but V4 is recommended for all new integrations.
+  </Accordion>
+  <Accordion title="Pre-signed URLs">
+    Generate time-limited URLs that grant temporary access to a specific object or operation without requiring the caller to have AWS credentials.
+
+    ```bash
+    # Generate a pre-signed GET URL valid for 1 hour (using mc)
+    mc share download --expire=1h alias/my-bucket/my-object
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Bucket operations
+
+<AccordionGroup>
+  <Accordion title="ListBuckets">
+    **GET /**
+
+    Returns a list of all buckets owned by the authenticated user.
+
+    ```bash
+    curl -X GET "http://localhost:9000/" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+
+    **Response example:**
+    ```xml
+    <?xml version="1.0" encoding="UTF-8"?>
+    <ListAllMyBucketsResult>
+      <Owner>
+        <ID>owner-id</ID>
+        <DisplayName>owner</DisplayName>
+      </Owner>
+      <Buckets>
+        <Bucket>
+          <Name>my-bucket</Name>
+          <CreationDate>2024-01-01T00:00:00.000Z</CreationDate>
+        </Bucket>
+      </Buckets>
+    </ListAllMyBucketsResult>
+    ```
+  </Accordion>
+
+  <Accordion title="PutBucket (CreateBucket)">
+    **PUT /\{bucket\}**
+
+    Creates a new bucket.
+
+    ```bash
+    curl -X PUT "http://localhost:9000/my-new-bucket" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="HeadBucket">
+    **HEAD /\{bucket\}**
+
+    Checks if a bucket exists and you have permission to access it. Returns `200 OK` if accessible, `404 Not Found` if not.
+
+    ```bash
+    curl -I "http://localhost:9000/my-bucket" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="DeleteBucket">
+    **DELETE /\{bucket\}**
+
+    Deletes an empty bucket. Returns an error if the bucket is not empty.
+
+    ```bash
+    curl -X DELETE "http://localhost:9000/my-bucket" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="GetBucketLocation">
+    **GET /\{bucket\}?location**
+
+    Returns the region the bucket resides in.
+  </Accordion>
+
+  <Accordion title="ListObjectsV1 / ListObjectsV2">
+    **GET /\{bucket\}** — ListObjectsV1 (legacy)
+
+    **GET /\{bucket\}?list-type=2** — ListObjectsV2
+
+    Lists objects in a bucket. V2 is recommended for all new code.
+
+    | Query parameter | Description |
+    |---|---|
+    | `prefix` | Limits results to keys beginning with this prefix |
+    | `delimiter` | Groups keys containing the delimiter after the prefix |
+    | `max-keys` | Maximum number of keys to return (default 1000) |
+    | `continuation-token` | Resume a previous listing (V2 only) |
+    | `marker` | Resume a previous listing (V1 only) |
+
+    ```bash
+    curl "http://localhost:9000/my-bucket?list-type=2&prefix=logs/" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="ListObjectVersions">
+    **GET /\{bucket\}?versions**
+
+    Lists all versions of all objects in a versioned bucket. Requires versioning to be enabled.
+  </Accordion>
+
+  <Accordion title="Bucket versioning">
+    **GET /\{bucket\}?versioning** — GetBucketVersioning
+
+    **PUT /\{bucket\}?versioning** — PutBucketVersioning
+
+    Enable, suspend, or retrieve the versioning state of a bucket.
+
+    ```bash
+    # Enable versioning
+    curl -X PUT "http://localhost:9000/my-bucket?versioning" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      -d '<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>'
+    ```
+  </Accordion>
+
+  <Accordion title="Bucket lifecycle">
+    **GET /\{bucket\}?lifecycle** — GetBucketLifecycle
+
+    **PUT /\{bucket\}?lifecycle** — PutBucketLifecycle
+
+    **DELETE /\{bucket\}?lifecycle** — DeleteBucketLifecycle
+
+    Manage lifecycle configuration rules for automatic object expiration and tiering transitions.
+  </Accordion>
+
+  <Accordion title="Bucket encryption">
+    **GET /\{bucket\}?encryption** — GetBucketEncryption
+
+    **PUT /\{bucket\}?encryption** — PutBucketEncryption
+
+    **DELETE /\{bucket\}?encryption** — DeleteBucketEncryption
+
+    Manage server-side encryption configuration for a bucket (SSE-S3 or SSE-KMS).
+  </Accordion>
+
+  <Accordion title="Bucket policy">
+    **GET /\{bucket\}?policy** — GetBucketPolicy
+
+    **PUT /\{bucket\}?policy** — PutBucketPolicy
+
+    **DELETE /\{bucket\}?policy** — DeleteBucketPolicy
+
+    **GET /\{bucket\}?policyStatus** — GetBucketPolicyStatus
+
+    Manage IAM-style JSON bucket policies.
+  </Accordion>
+
+  <Accordion title="Bucket notifications">
+    **GET /\{bucket\}?notification** — GetBucketNotification
+
+    **PUT /\{bucket\}?notification** — PutBucketNotification
+
+    **GET /\{bucket\}?events=\{events\}** — ListenNotification
+
+    Configure event notifications and listen to real-time event streams.
+  </Accordion>
+
+  <Accordion title="Bucket replication">
+    **GET /\{bucket\}?replication** — GetBucketReplicationConfig
+
+    **PUT /\{bucket\}?replication** — PutBucketReplicationConfig
+
+    **DELETE /\{bucket\}?replication** — DeleteBucketReplicationConfig
+
+    **GET /\{bucket\}?replication-metrics=2** — GetBucketReplicationMetricsV2
+
+    **PUT /\{bucket\}?replication-reset** — ResetBucketReplicationStart (MinIO extension)
+
+    **GET /\{bucket\}?replication-reset-status** — ResetBucketReplicationStatus (MinIO extension)
+
+    **GET /\{bucket\}?replication-check** — ValidateBucketReplicationCreds (MinIO extension)
+  </Accordion>
+
+  <Accordion title="Bucket object lock">
+    **GET /\{bucket\}?object-lock** — GetBucketObjectLockConfig
+
+    **PUT /\{bucket\}?object-lock** — PutBucketObjectLockConfig
+
+    Manage WORM (Write Once Read Many) object lock configuration for compliance retention.
+  </Accordion>
+
+  <Accordion title="Bucket tagging">
+    **GET /\{bucket\}?tagging** — GetBucketTagging
+
+    **PUT /\{bucket\}?tagging** — PutBucketTagging
+
+    **DELETE /\{bucket\}?tagging** — DeleteBucketTagging
+  </Accordion>
+
+  <Accordion title="Other bucket operations">
+    | Method | Query | Handler |
+    |---|---|---|
+    | `GET` | `?cors` | GetBucketCors (compatibility stub) |
+    | `PUT` | `?cors` | PutBucketCors (compatibility stub) |
+    | `DELETE` | `?cors` | DeleteBucketCors (compatibility stub) |
+    | `GET` | `?acl` | GetBucketACL (compatibility stub) |
+    | `PUT` | `?acl` | PutBucketACL (compatibility stub) |
+    | `GET` | `?website` | GetBucketWebsite (compatibility stub) |
+    | `DELETE` | `?website` | DeleteBucketWebsite |
+    | `GET` | `?accelerate` | GetBucketAccelerate (compatibility stub) |
+    | `GET` | `?requestPayment` | GetBucketRequestPayment (compatibility stub) |
+    | `GET` | `?logging` | GetBucketLogging (compatibility stub) |
+    | `GET` | `?uploads` | ListMultipartUploads |
+    | `POST` | `?delete` | DeleteMultipleObjects |
+    | `POST` | (policy signature) | PostPolicy |
+  </Accordion>
+</AccordionGroup>
+
+## Object operations
+
+<AccordionGroup>
+  <Accordion title="GetObject">
+    **GET /\{bucket\}/\{object\}**
+
+    Downloads an object. Supports range requests for partial downloads.
+
+    | Header | Description |
+    |---|---|
+    | `Range` | Byte range to retrieve, e.g. `bytes=0-1023` |
+    | `If-Match` | Return object only if ETag matches |
+    | `If-None-Match` | Return object only if ETag does not match |
+    | `If-Modified-Since` | Return object only if modified after this date |
+    | `x-amz-server-side-encryption-customer-algorithm` | SSE-C algorithm |
+
+    ```bash
+    curl -O "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+
+    # Partial download (first 1 KB)
+    curl -H "Range: bytes=0-1023" \
+      -O "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="HeadObject">
+    **HEAD /\{bucket\}/\{object\}**
+
+    Retrieves object metadata without downloading the object body. Returns the same headers as `GetObject`.
+
+    ```bash
+    curl -I "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="PutObject">
+    **PUT /\{bucket\}/\{object\}**
+
+    Uploads an object. For objects larger than 5 GB, use multipart upload instead.
+
+    | Header | Description |
+    |---|---|
+    | `Content-Length` | Required. Size of the object in bytes |
+    | `Content-MD5` | Optional MD5 checksum for integrity verification |
+    | `x-amz-storage-class` | `STANDARD` or `REDUCED_REDUNDANCY` |
+    | `x-amz-server-side-encryption` | `aws:kms` or `AES256` |
+    | `x-amz-meta-*` | Custom metadata key-value pairs |
+
+    ```bash
+    curl -X PUT "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      -H "Content-Length: 1234" \
+      --data-binary @localfile.txt
+    ```
+  </Accordion>
+
+  <Accordion title="CopyObject">
+    **PUT /\{bucket\}/\{object\}** with `x-amz-copy-source` header
+
+    Copies an object from a source to a destination within MinIO. The source is specified in the `x-amz-copy-source` header.
+
+    ```bash
+    curl -X PUT "http://localhost:9000/dest-bucket/dest-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      -H "x-amz-copy-source: /source-bucket/source-object"
+    ```
+  </Accordion>
+
+  <Accordion title="DeleteObject">
+    **DELETE /\{bucket\}/\{object\}**
+
+    Deletes a single object. On versioned buckets, creates a delete marker unless a specific version ID is supplied.
+
+    ```bash
+    curl -X DELETE "http://localhost:9000/my-bucket/my-object" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+  </Accordion>
+
+  <Accordion title="GetObjectAttributes">
+    **GET /\{bucket\}/\{object\}?attributes**
+
+    Returns a subset of object attributes without downloading the full object. Useful for retrieving checksum or part information.
+  </Accordion>
+
+  <Accordion title="Object tagging">
+    **GET /\{bucket\}/\{object\}?tagging** — GetObjectTagging
+
+    **PUT /\{bucket\}/\{object\}?tagging** — PutObjectTagging
+
+    **DELETE /\{bucket\}/\{object\}?tagging** — DeleteObjectTagging
+  </Accordion>
+
+  <Accordion title="Object retention and legal hold">
+    **GET /\{bucket\}/\{object\}?retention** — GetObjectRetention
+
+    **PUT /\{bucket\}/\{object\}?retention** — PutObjectRetention
+
+    **GET /\{bucket\}/\{object\}?legal-hold** — GetObjectLegalHold
+
+    **PUT /\{bucket\}/\{object\}?legal-hold** — PutObjectLegalHold
+
+    Manage WORM retention modes (`GOVERNANCE` or `COMPLIANCE`) and legal holds on individual object versions.
+  </Accordion>
+
+  <Accordion title="SelectObjectContent">
+    **POST /\{bucket\}/\{object\}?select&select-type=2**
+
+    Run SQL expressions against CSV, JSON, or Parquet objects and return only matching records.
+  </Accordion>
+
+  <Accordion title="PostRestoreObject">
+    **POST /\{bucket\}/\{object\}?restore**
+
+    Initiates a restore request for an object that has been transitioned to a remote tier.
+  </Accordion>
+
+  <Accordion title="GetObjectLambda">
+    **GET /\{bucket\}/\{object\}?lambdaArn=\{arn\}**
+
+    Retrieves an object by passing it through a registered Lambda function for on-the-fly transformation.
+  </Accordion>
+
+  <Accordion title="PutObjectExtract">
+    **PUT /\{bucket\}/\{object\}** with `x-minio-extract: true` header
+
+    MinIO extension. Uploads a ZIP archive and automatically extracts its contents into the bucket.
+  </Accordion>
+</AccordionGroup>
+
+## Multipart upload operations
+
+Multipart uploads allow large objects to be uploaded in parts and assembled server-side. Parts must be between 5 MB and 5 GB each (except the last part).
+
+<AccordionGroup>
+  <Accordion title="NewMultipartUpload (CreateMultipartUpload)">
+    **POST /\{bucket\}/\{object\}?uploads**
+
+    Initiates a new multipart upload and returns an `uploadId`.
+
+    ```bash
+    curl -X POST "http://localhost:9000/my-bucket/large-file.bin?uploads" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..."
+    ```
+
+    **Response:**
+    ```xml
+    <InitiateMultipartUploadResult>
+      <Bucket>my-bucket</Bucket>
+      <Key>large-file.bin</Key>
+      <UploadId>abc123</UploadId>
+    </InitiateMultipartUploadResult>
+    ```
+  </Accordion>
+
+  <Accordion title="PutObjectPart (UploadPart)">
+    **PUT /\{bucket\}/\{object\}?partNumber=\{N\}&uploadId=\{id\}**
+
+    Uploads one part of a multipart upload. Returns an `ETag` that must be retained for the final assembly step.
+
+    ```bash
+    curl -X PUT "http://localhost:9000/my-bucket/large-file.bin?partNumber=1&uploadId=abc123" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      -H "Content-Length: 5242880" \
+      --data-binary @part1.bin
+    ```
+  </Accordion>
+
+  <Accordion title="CopyObjectPart (UploadPartCopy)">
+    **PUT /\{bucket\}/\{object\}?partNumber=\{N\}&uploadId=\{id\}** with `x-amz-copy-source` header
+
+    Copies a range of bytes from an existing object as a part in a multipart upload.
+  </Accordion>
+
+  <Accordion title="ListObjectParts">
+    **GET /\{bucket\}/\{object\}?uploadId=\{id\}**
+
+    Lists the parts that have been uploaded for a specific multipart upload.
+  </Accordion>
+
+  <Accordion title="CompleteMultipartUpload">
+    **POST /\{bucket\}/\{object\}?uploadId=\{id\}**
+
+    Assembles previously uploaded parts into a complete object. The request body must include the `ETag` of each part in order.
+
+    ```bash
+    curl -X POST "http://localhost:9000/my-bucket/large-file.bin?uploadId=abc123" \
+      -H "Authorization: AWS4-HMAC-SHA256 ..." \
+      -d '<CompleteMultipartUpload>
+            <Part><PartNumber>1</PartNumber><ETag>"etag1"</ETag></Part>
+            <Part><PartNumber>2</PartNumber><ETag>"etag2"</ETag></Part>
+          </CompleteMultipartUpload>'
+    ```
+  </Accordion>
+
+  <Accordion title="AbortMultipartUpload">
+    **DELETE /\{bucket\}/\{object\}?uploadId=\{id\}**
+
+    Cancels a multipart upload and removes all previously uploaded parts.
+  </Accordion>
+
+  <Accordion title="ListMultipartUploads">
+    **GET /\{bucket\}?uploads**
+
+    Lists all in-progress multipart uploads for a bucket.
+  </Accordion>
+</AccordionGroup>
+
+## Error codes
+
+All error responses use the following XML format:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>NoSuchKey</Code>
+  <Message>The specified key does not exist.</Message>
+  <Key>my-object</Key>
+  <BucketName>my-bucket</BucketName>
+  <Resource>/my-bucket/my-object</Resource>
+  <RequestId>REQUEST_ID</RequestId>
+  <HostId>HOST_ID</HostId>
+</Error>
+```
+
+<AccordionGroup>
+  <Accordion title="Common error codes">
+    | Code | HTTP status | Description |
+    |---|---|---|
+    | `AccessDenied` | 403 | Access Denied |
+    | `BadDigest` | 400 | Content-MD5 mismatch |
+    | `BucketAlreadyExists` | 409 | Bucket already exists |
+    | `BucketAlreadyOwnedByYou` | 409 | Bucket already owned by you |
+    | `BucketNotEmpty` | 409 | Bucket is not empty |
+    | `EntityTooLarge` | 400 | Upload exceeds maximum allowed size |
+    | `EntityTooSmall` | 400 | Upload is smaller than minimum allowed size |
+    | `IncompleteBody` | 400 | Fewer bytes than specified by Content-Length |
+    | `InternalError` | 500 | Internal server error |
+    | `InvalidAccessKeyId` | 403 | Access key does not exist |
+    | `InvalidArgument` | 400 | Invalid argument |
+    | `InvalidBucketName` | 400 | Bucket name is not valid |
+    | `InvalidDigest` | 400 | Content-MD5 is not valid |
+    | `InvalidPart` | 400 | One or more parts could not be found |
+    | `InvalidPartOrder` | 400 | Parts list is not in ascending order |
+    | `InvalidRange` | 416 | Requested range not satisfiable |
+    | `InvalidStorageClass` | 400 | Invalid storage class |
+    | `MalformedXML` | 400 | XML was not well-formed |
+    | `MethodNotAllowed` | 405 | Method not allowed on this resource |
+    | `MissingContentLength` | 411 | Content-Length header required |
+    | `NoSuchBucket` | 404 | Specified bucket does not exist |
+    | `NoSuchKey` | 404 | Specified key does not exist |
+    | `NoSuchUpload` | 404 | Multipart upload does not exist |
+    | `NoSuchVersion` | 404 | Specified version does not exist |
+    | `NotImplemented` | 501 | Operation not implemented |
+    | `PreconditionFailed` | 412 | Precondition specified in request was not met |
+    | `RequestTimeTooSkewed` | 403 | Request timestamp too far from server time |
+    | `SignatureDoesNotMatch` | 403 | Computed signature does not match |
+    | `SlowDown` | 503 | Slow down — request rate too high |
+    | `TooManyRequests` | 429 | Too many requests |
+  </Accordion>
+
+  <Accordion title="Object lock error codes">
+    | Code | HTTP status | Description |
+    |---|---|---|
+    | `InvalidBucketObjectLockConfiguration` | 400 | Invalid object lock configuration |
+    | `InvalidRetentionDate` | 400 | Date specified for retention is not valid |
+    | `ObjectLockConfigurationNotFound` | 404 | Object lock configuration not found |
+    | `ObjectLocked` | 400 | Object is WORM protected |
+    | `PastObjectLockRetainDate` | 400 | Retention date must be in the future |
+  </Accordion>
+
+  <Accordion title="Encryption error codes">
+    | Code | HTTP status | Description |
+    |---|---|---|
+    | `InvalidEncryptionAlgorithmError` | 400 | Encryption algorithm is not supported |
+    | `InvalidSSECustomerAlgorithm` | 400 | Invalid SSE-C algorithm |
+    | `InvalidSSECustomerKey` | 400 | Invalid SSE-C key |
+    | `KMS.NotFoundException` | 400 | KMS key not found |
+    | `SSECustomerKeyMD5Mismatch` | 400 | SSE-C key MD5 does not match |
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+MinIO rejects several S3 APIs that are not applicable to its architecture, including `inventory`, `metrics`, `intelligent-tiering`, `analytics`, `publicAccessBlock`, and `ownershipControls`. These return `501 NotImplemented`.
+</Note>

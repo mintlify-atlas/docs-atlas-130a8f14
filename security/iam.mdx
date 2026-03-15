@@ -1,0 +1,243 @@
+---
+title: "Identity and access management"
+description: "Manage users, groups, and policies with MinIO IAM"
+---
+
+MinIO implements AWS IAM-compatible identity and access management. Every API request is evaluated against IAM policies before being allowed or denied.
+
+## Users and service accounts
+
+MinIO supports two types of long-term credentials:
+
+- **Users** — human or application identities with an access key and secret key. Created and managed with `mc admin user`.
+- **Service accounts** — credentials scoped to a subset of a parent user's permissions. Useful for giving applications least-privilege access without sharing the parent credentials.
+
+```sh
+# Create a user
+mc admin user add myminio alice alicepassword
+
+# List users
+mc admin user list myminio
+
+# Attach a policy to a user
+mc admin policy attach myminio readwrite --user alice
+```
+
+## Groups
+
+Groups are collections of users that share an IAM policy. Policies attached to a group apply to all members.
+
+```sh
+# Create a group
+mc admin group add myminio developers alice bob
+
+# Attach a policy to a group
+mc admin policy attach myminio readwrite --group developers
+
+# List groups
+mc admin group list myminio
+```
+
+<Note>
+When AD/LDAP is configured, MinIO does not support creating users or groups via `mc admin user` or `mc admin group` commands (except `info`). Users and groups are managed externally in the directory.
+</Note>
+
+## IAM policies
+
+MinIO policies follow the AWS IAM policy JSON format. A policy document contains one or more statements, each specifying an effect (`Allow` or `Deny`), a list of S3 actions, and resource ARNs.
+
+### Policy structure
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-bucket/*"
+      ]
+    }
+  ]
+}
+```
+
+### Common S3 actions
+
+| Action | Description |
+|---|---|
+| `s3:GetObject` | Download objects |
+| `s3:PutObject` | Upload objects |
+| `s3:DeleteObject` | Delete objects |
+| `s3:ListBucket` | List objects in a bucket |
+| `s3:ListAllMyBuckets` | List all buckets |
+| `s3:CreateBucket` | Create a bucket |
+| `s3:DeleteBucket` | Delete a bucket |
+| `s3:GetBucketPolicy` | Read bucket policy |
+| `s3:PutBucketPolicy` | Write bucket policy |
+| `s3:*` | All S3 actions |
+
+### Built-in policies
+
+MinIO ships with several predefined policies:
+
+| Policy | Permissions |
+|---|---|
+| `consoleAdmin` | Full administrative access |
+| `readwrite` | Read and write access to all buckets |
+| `readonly` | Read-only access to all buckets |
+| `writeonly` | Write-only access to all buckets |
+| `diagnostics` | Access to diagnostic and profiling APIs |
+
+### Creating and applying a custom policy
+
+<Steps>
+  <Step title="Write the policy JSON">
+    Save your policy to a file, for example `mypolicy.json`:
+
+    ```json
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:GetObject", "s3:ListBucket"],
+          "Resource": [
+            "arn:aws:s3:::reports",
+            "arn:aws:s3:::reports/*"
+          ]
+        }
+      ]
+    }
+    ```
+  </Step>
+  <Step title="Create the policy in MinIO">
+    ```sh
+    mc admin policy create myminio reports-read mypolicy.json
+    ```
+  </Step>
+  <Step title="Attach the policy">
+    ```sh
+    # Attach to a user
+    mc admin policy attach myminio reports-read --user alice
+
+    # Attach to a group
+    mc admin policy attach myminio reports-read --group analysts
+    ```
+  </Step>
+</Steps>
+
+## LDAP / Active Directory integration
+
+MinIO can authenticate users against an AD/LDAP directory. Configure it with the following environment variables:
+
+```sh
+export MINIO_IDENTITY_LDAP_SERVER_ADDR=myldapserver.com:636
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN='cn=admin,dc=example,dc=com'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD=adminpassword
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN='ou=users,dc=example,dc=com'
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(uid=%s)'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN='ou=groups,dc=example,dc=com'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER='(&(objectclass=groupOfNames)(member=%d))'
+```
+
+<Warning>
+MinIO sends LDAP credentials to the LDAP server for validation. Use TLS or StartTLS connections only. Plain-text LDAP connections expose credentials to anyone monitoring network traffic.
+</Warning>
+
+MinIO performs periodic LDAP sync to:
+- Remove STS credentials for accounts that have been deleted from the directory.
+- Update group memberships and the associated policies when a user's groups change.
+
+To associate an IAM policy with an LDAP user or group, use the full Distinguished Name:
+
+```sh
+mc idp ldap policy attach myminio mypolicy \
+  --user='uid=alice,cn=accounts,dc=example,dc=com'
+
+mc idp ldap policy attach myminio mypolicy \
+  --group='cn=developers,ou=groups,dc=example,dc=com'
+```
+
+## OpenID Connect integration
+
+MinIO can authenticate users via any OIDC-compatible identity provider (Keycloak, Dex, Casdoor, Google, etc.).
+
+```sh
+export MINIO_IDENTITY_OPENID_CONFIG_URL=https://accounts.example.com/.well-known/openid-configuration
+export MINIO_IDENTITY_OPENID_CLIENT_ID=minio-client-app
+export MINIO_IDENTITY_OPENID_CLIENT_SECRET=minio-client-app-secret
+export MINIO_IDENTITY_OPENID_ROLE_POLICY=readwrite
+```
+
+Or configure via `mc`:
+
+```sh
+mc admin config set myminio identity_openid \
+  config_url="https://accounts.example.com/.well-known/openid-configuration" \
+  client_id="minio-client-app"
+
+mc admin service restart myminio
+```
+
+### Access control with OIDC
+
+MinIO supports two methods for mapping OIDC users to IAM policies:
+
+<AccordionGroup>
+  <Accordion title="Role Policy (recommended)">
+    Set `MINIO_IDENTITY_OPENID_ROLE_POLICY` to a comma-separated list of policy names. All users authenticating through this provider receive the specified policies. MinIO prints a Role ARN at startup that must be included as `RoleArn` in the `AssumeRoleWithWebIdentity` STS call.
+
+    Multiple OIDC providers can each be assigned independent role policies.
+  </Accordion>
+  <Accordion title="JWT claim-based policy">
+    Set `MINIO_IDENTITY_OPENID_CLAIM_NAME` (default: `policy`) to the name of the JWT claim that carries the policy name. The claim value can be a string, a comma-separated list, or a JSON array of policy names.
+
+    At most one JWT claim-based provider can be configured per cluster.
+  </Accordion>
+</AccordionGroup>
+
+## Access Management Plugin
+
+For advanced scenarios, MinIO can delegate all authorization decisions to an external HTTP(S) webhook instead of evaluating IAM policies locally.
+
+```sh
+export MINIO_POLICY_PLUGIN_URL=http://localhost:8080/
+minio server /data
+```
+
+For every authenticated request, MinIO sends a `POST` request to the plugin URL with a JSON body describing the request:
+
+```json
+{
+  "input": {
+    "account": "alice",
+    "action": "s3:PutObject",
+    "bucket": "my-bucket",
+    "object": "path/to/file.txt",
+    "owner": false
+  }
+}
+```
+
+The plugin must respond with:
+
+```json
+{ "result": true }
+```
+
+or
+
+```json
+{ "result": { "allow": true } }
+```
+
+<Note>
+The Access Management Plugin adds latency to every authenticated request. Provision infrastructure to keep this latency within acceptable bounds for your workload.
+</Note>
+
+[Open Policy Agent (OPA)](https://www.openpolicyagent.org/) is a commonly used policy engine that integrates with MinIO through the Access Management Plugin by setting `MINIO_POLICY_PLUGIN_URL` to the OPA HTTP API endpoint.

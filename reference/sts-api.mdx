@@ -1,0 +1,276 @@
+---
+title: "STS API reference"
+description: "Security Token Service API for issuing temporary credentials"
+---
+
+The MinIO Security Token Service (STS) API issues short-lived credentials for programmatic access. It is compatible with the [AWS STS API](https://docs.aws.amazon.com/STS/latest/APIReference/welcome.html) and supports multiple identity sources.
+
+## Endpoint
+
+```
+POST https://<host>/
+```
+
+All STS actions use a single `POST` endpoint with `Content-Type: application/x-www-form-urlencoded`. The action is specified via the `Action` form field.
+
+The API version is `2011-06-15` and must be passed as the `Version` parameter in every request.
+
+## Response format
+
+All successful STS responses return XML. The temporary credentials in each response share the same structure:
+
+```xml
+<Credentials>
+  <AccessKeyId>TEMPORARY_ACCESS_KEY</AccessKeyId>
+  <SecretAccessKey>TEMPORARY_SECRET_KEY</SecretAccessKey>
+  <SessionToken>SESSION_TOKEN</SessionToken>
+  <Expiration>2024-01-01T01:00:00Z</Expiration>
+</Credentials>
+```
+
+<Note>
+Temporary credentials inherit the policy of the parent user or identity. You can further restrict permissions by passing a `Policy` parameter, but you cannot grant more permissions than the parent identity holds.
+</Note>
+
+## AssumeRole
+
+Issues temporary credentials for an existing MinIO user. Requires AWS Signature V4 authentication with the parent user's access key.
+
+**Matcher:** `Content-Type: application/x-www-form-urlencoded`, signed with `AWS4-HMAC-SHA256`, no query string.
+
+<ParamField body="Action" type="string" required>
+  Must be `AssumeRole`.
+</ParamField>
+
+<ParamField body="Version" type="string" required>
+  STS API version. Must be `2011-06-15`.
+</ParamField>
+
+<ParamField body="DurationSeconds" type="integer">
+  Lifetime of the temporary credentials in seconds. If omitted, the server default is used. The maximum is constrained by the server configuration.
+</ParamField>
+
+<ParamField body="Policy" type="string">
+  A URL-encoded JSON IAM policy document to further restrict permissions. Must not exceed 2048 characters. The session policy cannot grant permissions beyond those of the parent user.
+</ParamField>
+
+**Example request:**
+
+```bash
+curl -X POST "http://localhost:9000/" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Authorization: AWS4-HMAC-SHA256 ..." \
+  -d "Action=AssumeRole&Version=2011-06-15&DurationSeconds=3600"
+```
+
+**Example response:**
+
+```xml
+<AssumeRoleResponse>
+  <AssumeRoleResult>
+    <Credentials>
+      <AccessKeyId>TEMP_ACCESS_KEY</AccessKeyId>
+      <SecretAccessKey>TEMP_SECRET_KEY</SecretAccessKey>
+      <SessionToken>TOKEN</SessionToken>
+      <Expiration>2024-01-01T01:00:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleResult>
+  <ResponseMetadata>
+    <RequestId>REQUEST_ID</RequestId>
+  </ResponseMetadata>
+</AssumeRoleResponse>
+```
+
+## AssumeRoleWithWebIdentity
+
+Exchanges a JWT from an OpenID Connect provider for temporary MinIO credentials. No pre-existing MinIO user is required — the identity is derived from the JWT claims.
+
+**Matcher:** `POST /?Action=AssumeRoleWithWebIdentity&Version=2011-06-15&WebIdentityToken=<token>`
+
+<ParamField query="Action" type="string" required>
+  Must be `AssumeRoleWithWebIdentity`.
+</ParamField>
+
+<ParamField query="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField query="WebIdentityToken" type="string" required>
+  A valid JWT (ID token) issued by a configured OpenID Connect provider.
+</ParamField>
+
+<ParamField query="DurationSeconds" type="integer">
+  Requested lifetime of the temporary credentials in seconds.
+</ParamField>
+
+<ParamField query="Policy" type="string">
+  URL-encoded JSON session policy to further restrict permissions.
+</ParamField>
+
+<ParamField query="RoleArn" type="string">
+  ARN of a role to assume. Required when the MinIO server is configured with role-based OpenID claims.
+</ParamField>
+
+<ParamField query="WebIdentityAccessToken" type="string">
+  An OAuth2 access token. Only used when the OpenID provider is configured with `userinfo` lookup enabled to fetch additional claims.
+</ParamField>
+
+**Example request:**
+
+```bash
+curl -X POST \
+  "http://localhost:9000/?Action=AssumeRoleWithWebIdentity
+    &Version=2011-06-15
+    &WebIdentityToken=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+**Example response:**
+
+```xml
+<AssumeRoleWithWebIdentityResponse>
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>TEMP_ACCESS_KEY</AccessKeyId>
+      <SecretAccessKey>TEMP_SECRET_KEY</SecretAccessKey>
+      <SessionToken>TOKEN</SessionToken>
+      <Expiration>2024-01-01T01:00:00Z</Expiration>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+  <ResponseMetadata>
+    <RequestId>REQUEST_ID</RequestId>
+  </ResponseMetadata>
+</AssumeRoleWithWebIdentityResponse>
+```
+
+## AssumeRoleWithLDAPIdentity
+
+Issues temporary credentials by authenticating directly with a configured LDAP/Active Directory server. No pre-existing MinIO user is required.
+
+**Matcher:** `POST /?Action=AssumeRoleWithLDAPIdentity&Version=2011-06-15&LDAPUsername=<user>&LDAPPassword=<pass>`
+
+<ParamField query="Action" type="string" required>
+  Must be `AssumeRoleWithLDAPIdentity`.
+</ParamField>
+
+<ParamField query="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField query="LDAPUsername" type="string" required>
+  The LDAP username (login name) to authenticate.
+</ParamField>
+
+<ParamField query="LDAPPassword" type="string" required>
+  The LDAP password for the specified username.
+</ParamField>
+
+<ParamField query="DurationSeconds" type="integer">
+  Requested lifetime of the temporary credentials in seconds.
+</ParamField>
+
+<ParamField query="Policy" type="string">
+  URL-encoded JSON session policy to further restrict permissions.
+</ParamField>
+
+**Example request:**
+
+```bash
+curl -X POST \
+  "http://localhost:9000/?Action=AssumeRoleWithLDAPIdentity
+    &Version=2011-06-15
+    &LDAPUsername=jdoe
+    &LDAPPassword=secret"
+```
+
+<Warning>
+Always use HTTPS when calling `AssumeRoleWithLDAPIdentity`. The password is transmitted in the query string and must be protected by TLS.
+</Warning>
+
+## AssumeRoleWithCertificate
+
+Issues temporary credentials based on a client TLS certificate presented during the mTLS handshake. The certificate's subject is mapped to a MinIO identity.
+
+**Matcher:** `POST /?Action=AssumeRoleWithCertificate&Version=2011-06-15`
+
+<ParamField query="Action" type="string" required>
+  Must be `AssumeRoleWithCertificate`.
+</ParamField>
+
+<ParamField query="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<Note>
+This action requires the MinIO server to be configured with a client CA certificate and the client to present a valid certificate during the TLS handshake.
+</Note>
+
+## AssumeRoleWithCustomToken
+
+MinIO extension. Issues temporary credentials by validating a custom token against a registered identity plugin. The plugin is responsible for authenticating the token and returning claim mappings.
+
+**Matcher:** `POST /?Action=AssumeRoleWithCustomToken&Version=2011-06-15`
+
+<ParamField query="Action" type="string" required>
+  Must be `AssumeRoleWithCustomToken`.
+</ParamField>
+
+<ParamField query="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField query="Token" type="string" required>
+  The custom token to be validated by the identity plugin.
+</ParamField>
+
+<ParamField query="DurationSeconds" type="integer">
+  Requested lifetime of the temporary credentials in seconds.
+</ParamField>
+
+## AssumeRoleWithClientGrants
+
+Issues temporary credentials using an OAuth 2.0 client credentials grant token (legacy endpoint). Prefer `AssumeRoleWithWebIdentity` for new integrations.
+
+**Matcher:** `POST /?Action=AssumeRoleWithClientGrants&Version=2011-06-15&Token=<token>`
+
+<ParamField query="Action" type="string" required>
+  Must be `AssumeRoleWithClientGrants`.
+</ParamField>
+
+<ParamField query="Version" type="string" required>
+  Must be `2011-06-15`.
+</ParamField>
+
+<ParamField query="Token" type="string" required>
+  A valid OAuth 2.0 access token issued by a configured identity provider.
+</ParamField>
+
+<ParamField query="DurationSeconds" type="integer">
+  Requested lifetime of the temporary credentials in seconds.
+</ParamField>
+
+## Error responses
+
+STS errors are returned as XML with an HTTP error status code:
+
+```xml
+<ErrorResponse>
+  <Error>
+    <Type>Sender</Type>
+    <Code>AccessDenied</Code>
+    <Message>Access denied</Message>
+  </Error>
+  <RequestId>REQUEST_ID</RequestId>
+</ErrorResponse>
+```
+
+| Code | Description |
+|---|---|
+| `AccessDenied` | Authentication failed or credentials are insufficient |
+| `ExpiredTokenException` | The provided token has expired |
+| `IDPCommunicationError` | Unable to reach the configured identity provider |
+| `IDPRejectedClaim` | Identity provider rejected the token or claims |
+| `InvalidIdentityToken` | The identity token is malformed or invalid |
+| `InvalidParameterValue` | A request parameter has an invalid value |
+| `MissingParameter` | A required parameter is absent |
+| `STSInternalError` | Unexpected server-side error |
+| `STSNotInitialized` | The MinIO server is not ready to serve requests |

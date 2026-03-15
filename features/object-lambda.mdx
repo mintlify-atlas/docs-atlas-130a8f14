@@ -1,0 +1,230 @@
+---
+title: "Object Lambda"
+description: "Transform objects on-the-fly during GET requests using custom functions"
+---
+
+Object Lambda lets you intercept GET requests for objects and run custom transformation logic before the data reaches the caller. Instead of serving the raw object, MinIO forwards the request to a registered Lambda function endpoint, which fetches the original object, processes it, and returns the modified response.
+
+Common use cases include:
+- Redacting personally identifiable information (PII) for analytics workloads
+- Enriching data with values from other systems at read time
+- Converting between data formats on demand
+- Applying custom access control or watermarking
+
+## How it works
+
+<Steps>
+  <Step title="Register a Lambda target">
+    Start MinIO with one or more `MINIO_LAMBDA_WEBHOOK_*` environment variables to declare a Lambda function endpoint. MinIO assigns each target an ARN of the form `arn:minio:s3-object-lambda::<name>:webhook`.
+  </Step>
+  <Step title="Client requests an object with a Lambda ARN">
+    The caller makes a presigned GET request and includes the `lambdaArn` query parameter. MinIO intercepts the request and does not serve the stored object directly.
+  </Step>
+  <Step title="MinIO calls the Lambda function">
+    MinIO sends a POST request to the registered webhook endpoint with a JSON event payload. The payload contains a presigned URL the function can use to fetch the original object, plus routing and token values needed to send the response back.
+  </Step>
+  <Step title="Lambda function transforms and returns the object">
+    The function downloads the original object using the presigned URL, applies its transformation, and streams the result back to MinIO with the required `x-amz-request-route` and `x-amz-request-token` headers.
+  </Step>
+  <Step title="MinIO forwards the transformed response to the caller">
+    MinIO validates the routing token and token value, then streams the function's response body to the original caller.
+  </Step>
+</Steps>
+
+## Event payload structure
+
+When MinIO calls your Lambda function it sends a POST body with this structure:
+
+```json
+{
+  "getObjectContext": {
+    "inputS3Url": "https://...",
+    "outputRoute": "<routing-token>",
+    "outputToken": "<validation-token>"
+  },
+  "userRequest": {
+    "url": "/functionbucket/testobject?lambdaArn=...",
+    "headers": { ... }
+  },
+  "userIdentity": {
+    "type": "IAMUser",
+    "principalId": "minioadmin",
+    "accessKeyId": "minioadmin"
+  }
+}
+```
+
+| Field | Description |
+| :--- | :--- |
+| `getObjectContext.inputS3Url` | Presigned URL to download the original object. No credentials are needed; the URL is already signed. |
+| `getObjectContext.outputRoute` | Routing token that must be echoed back in the `x-amz-request-route` response header. |
+| `getObjectContext.outputToken` | Validation token that must be echoed back in the `x-amz-request-token` response header. |
+| `userRequest` | The original HTTP request URL and headers. |
+| `userIdentity` | The IAM identity that initiated the request. |
+
+## Registering a Lambda target
+
+Set the following environment variables before starting MinIO. The identifier (`function` in this example) becomes part of the ARN.
+
+```bash
+export MINIO_LAMBDA_WEBHOOK_ENABLE_function=on
+export MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=http://localhost:5000
+
+minio server /data
+```
+
+On startup MinIO prints:
+
+```text
+Object Lambda ARNs: arn:minio:s3-object-lambda::function:webhook
+```
+
+### Authentication options
+
+<Tabs>
+  <Tab title="Static auth token">
+    ```bash
+    export MINIO_LAMBDA_WEBHOOK_ENABLE_function=on
+    export MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=http://localhost:5000
+    export MINIO_LAMBDA_WEBHOOK_AUTH_TOKEN_function=mytoken
+    ```
+
+    MinIO includes the token as a `Bearer` value in the `Authorization` header of every call to the function.
+  </Tab>
+  <Tab title="mTLS">
+    ```bash
+    export MINIO_LAMBDA_WEBHOOK_ENABLE_function=on
+    export MINIO_LAMBDA_WEBHOOK_ENDPOINT_function=https://lambda.example.com:5000
+    export MINIO_LAMBDA_WEBHOOK_CLIENT_CERT_function=client.crt
+    export MINIO_LAMBDA_WEBHOOK_CLIENT_KEY_function=client.key
+    ```
+  </Tab>
+</Tabs>
+
+## Writing a Lambda function
+
+Your function can be written in any language and framework that can accept HTTP POST requests. The example below is a Python Flask handler that uppercases the content of every object.
+
+```bash
+pip install flask requests
+```
+
+```python
+from flask import Flask, request, abort, make_response
+import requests
+
+app = Flask(__name__)
+
+@app.route('/', methods=['POST'])
+def get_webhook():
+    if request.method != 'POST':
+        abort(400)
+
+    event = request.json
+    object_context = event["getObjectContext"]
+
+    # Use the presigned URL to fetch the original object — no credentials needed
+    s3_url = object_context["inputS3Url"]
+    request_route = object_context["outputRoute"]
+    request_token = object_context["outputToken"]
+
+    r = requests.get(s3_url)
+    original_object = r.content.decode('utf-8')
+
+    # Apply your transformation logic here
+    transformed_object = original_object.upper()
+
+    # Return the result with the required routing headers
+    resp = make_response(transformed_object, 200)
+    resp.headers['x-amz-request-route'] = request_route
+    resp.headers['x-amz-request-token'] = request_token
+    return resp
+
+if __name__ == '__main__':
+    app.run()
+```
+
+Start the handler:
+
+```bash
+python lambda_handler.py
+# * Running on http://127.0.0.1:5000
+```
+
+## End-to-end example
+
+### Upload a test object
+
+```bash
+mc alias set myminio http://localhost:9000 minioadmin minioadmin
+mc mb myminio/functionbucket
+
+cat > testobject << EOF
+MinIO is a High Performance Object Storage released under GNU Affero General Public License v3.0.
+EOF
+
+mc cp testobject myminio/functionbucket/
+```
+
+### Invoke the Lambda via a presigned GET
+
+Generate a presigned URL that routes through the `function` Lambda target:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "net/url"
+    "time"
+
+    "github.com/minio/minio-go/v7"
+    "github.com/minio/minio-go/v7/pkg/credentials"
+)
+
+func main() {
+    s3Client, err := minio.New("localhost:9000", &minio.Options{
+        Creds:  credentials.NewStaticV4("minioadmin", "minioadmin", ""),
+        Secure: false,
+    })
+    if err != nil {
+        log.Fatalln(err)
+    }
+
+    // Reference the Lambda ARN via query parameter
+    reqParams := make(url.Values)
+    reqParams.Set("lambdaArn", "arn:minio:s3-object-lambda::function:webhook")
+
+    presignedURL, err := s3Client.PresignedGetObject(
+        context.Background(),
+        "functionbucket",
+        "testobject",
+        time.Duration(1000)*time.Second,
+        reqParams,
+    )
+    if err != nil {
+        log.Fatalln(err)
+    }
+    fmt.Println(presignedURL)
+}
+```
+
+Fetch the transformed object:
+
+```bash
+curl -s $(go run presigned.go)
+```
+
+```text
+MINIO IS A HIGH PERFORMANCE OBJECT STORAGE RELEASED UNDER GNU AFFERO GENERAL PUBLIC LICENSE V3.0.
+```
+
+<Note>
+Object Lambda only applies to GET requests that include the `lambdaArn` query parameter. Direct GET requests without the parameter are served normally without any transformation.
+</Note>
+
+<Warning>
+The Lambda function receives a presigned URL that expires in 1 hour. If the function takes longer than that to respond, the presigned fetch will fail. Keep transformation logic fast and avoid unbounded processing.
+</Warning>

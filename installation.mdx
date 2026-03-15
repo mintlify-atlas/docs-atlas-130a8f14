@@ -1,0 +1,235 @@
+---
+title: "Installation"
+description: "Install MinIO from source, Docker, or Helm"
+---
+
+MinIO is distributed as source code only — there are no pre-compiled binary releases for the community edition. Choose the installation method that fits your environment.
+
+<Tabs>
+  <Tab title="Go install">
+    The fastest way to get a MinIO binary is to install it directly using the Go toolchain.
+
+    ## Requirements
+
+    - [Go 1.24 or later](https://golang.org/dl/#stable)
+
+    ## Install
+
+    ```bash
+    go install github.com/minio/minio@latest
+    ```
+
+    This compiles MinIO and places the binary in your `$GOPATH/bin` directory. Ensure `$GOPATH/bin` is on your `$PATH`.
+
+    Verify the installation:
+
+    ```bash
+    minio --version
+    ```
+
+    ## Start the server
+
+    ```bash
+    minio server /data
+    ```
+
+    <Note>
+      The default root credentials are `minioadmin:minioadmin`. Set `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` environment variables before starting the server in production.
+    </Note>
+  </Tab>
+
+  <Tab title="Build from source">
+    Build MinIO from source if you need to target a specific OS or architecture, or want to apply local modifications.
+
+    ## Requirements
+
+    - [Go 1.24 or later](https://golang.org/dl/#stable)
+    - Git
+
+    ## Clone and build
+
+    <Steps>
+      <Step title="Clone the repository">
+        ```bash
+        git clone https://github.com/minio/minio.git
+        cd minio
+        ```
+      </Step>
+
+      <Step title="Build the binary">
+        Build for your current platform:
+
+        ```bash
+        go build
+        ```
+
+        To cross-compile for a different OS or architecture, set `GOOS` and `GOARCH`:
+
+        <CodeGroup>
+
+        ```bash Linux ARM64
+        env GOOS=linux GOARCH=arm64 go build
+        ```
+
+        ```bash Linux AMD64
+        env GOOS=linux GOARCH=amd64 go build
+        ```
+
+        ```bash macOS (Apple Silicon)
+        env GOOS=darwin GOARCH=arm64 go build
+        ```
+
+        ```bash Windows AMD64
+        env GOOS=windows GOARCH=amd64 go build
+        ```
+
+        </CodeGroup>
+      </Step>
+
+      <Step title="Run the binary">
+        ```bash
+        ./minio server /data
+        ```
+      </Step>
+    </Steps>
+
+    <Warning>
+      Production environments using compiled-from-source MinIO binaries do so at their own risk. The AGPLv3 license provides no warranties or liabilities for such usage.
+    </Warning>
+  </Tab>
+
+  <Tab title="Docker">
+    Build a Docker image from the provided `Dockerfile` in the MinIO source repository.
+
+    ## Requirements
+
+    - Docker
+    - A compiled `minio` binary (see [Build from source](#build-from-source))
+
+    ## Build the Docker image
+
+    <Steps>
+      <Step title="Build the MinIO binary">
+        The `Dockerfile` expects a pre-built binary in the project root. Follow the [Build from source](#build-from-source) steps first, then return here.
+      </Step>
+
+      <Step title="Build the Docker image">
+        From the root of the cloned repository, build the image and tag it:
+
+        ```bash
+        docker build -t myminio:minio .
+        ```
+
+        Confirm the image was created:
+
+        ```bash
+        docker image ls
+        ```
+      </Step>
+
+      <Step title="Run the container">
+        Start a container from the image, exposing the API and Console ports:
+
+        ```bash
+        docker run -p 9000:9000 -p 9001:9001 myminio:minio server /tmp/minio --console-address :9001
+        ```
+
+        The MinIO API is available at `http://localhost:9000` and the Console at `http://localhost:9001`.
+      </Step>
+    </Steps>
+
+    <Note>
+      The `Dockerfile` copies in a pre-built binary at build time. You can modify `Dockerfile` and `dockerscripts/docker-entrypoint.sh` to suit your specific image requirements.
+    </Note>
+  </Tab>
+
+  <Tab title="Helm">
+    Deploy MinIO on Kubernetes using the community-maintained Helm chart.
+
+    <Warning>
+      This Helm chart is community built and maintained. MinIO does not provide official support for it. For production Kubernetes deployments, MinIO strongly recommends using the [MinIO Kubernetes Operator](https://github.com/minio/operator).
+    </Warning>
+
+    ## Requirements
+
+    - Helm CLI
+    - A configured Kubernetes cluster (v1.19 or later recommended)
+    - PersistentVolume provisioner support in the cluster
+
+    ## Install
+
+    <Steps>
+      <Step title="Add the MinIO Helm repository">
+        ```bash
+        helm repo add minio https://charts.min.io/
+        ```
+      </Step>
+
+      <Step title="Install the chart">
+        Install MinIO into a dedicated namespace, setting root credentials:
+
+        ```bash
+        helm install \
+          --namespace minio \
+          --set rootUser=rootuser,rootPassword=rootpass123 \
+          --generate-name \
+          minio/minio
+        ```
+
+        For a minimal test setup with no persistent storage:
+
+        ```bash
+        helm install \
+          --set resources.requests.memory=512Mi \
+          --set replicas=1 \
+          --set persistence.enabled=false \
+          --set mode=standalone \
+          --set rootUser=rootuser,rootPassword=rootpass123 \
+          --generate-name \
+          minio/minio
+        ```
+      </Step>
+
+      <Step title="Verify the deployment">
+        Check that the MinIO pods are running:
+
+        ```bash
+        kubectl get pods --namespace minio
+        ```
+      </Step>
+    </Steps>
+
+    ## Common configuration options
+
+    Pass configuration values with `--set key=value` or via a `values.yaml` file:
+
+    ```bash
+    helm install --name my-release -f values.yaml minio/minio
+    ```
+
+    | Parameter | Description | Default |
+    |---|---|---|
+    | `rootUser` | Root access key | — |
+    | `rootPassword` | Root secret key | — |
+    | `replicas` | Number of MinIO instances | `16` |
+    | `mode` | Deployment mode: `standalone` or `distributed` | `distributed` |
+    | `persistence.enabled` | Enable PersistentVolumeClaims | `true` |
+    | `persistence.size` | PVC size per replica | `500Gi` |
+
+    Refer to the [values.yaml](https://github.com/minio/minio/blob/master/helm/minio/values.yaml) file for the full list of configuration parameters.
+
+    ## Upgrade the chart
+
+    ```bash
+    helm get values my-release > old_values.yaml
+    # Edit old_values.yaml as needed
+    helm upgrade -f old_values.yaml my-release minio/minio
+    ```
+
+    ## Uninstall the chart
+
+    ```bash
+    helm uninstall my-release
+    ```
+  </Tab>
+</Tabs>

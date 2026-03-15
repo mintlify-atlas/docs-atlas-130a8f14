@@ -1,0 +1,371 @@
+---
+title: "Security Token Service (STS)"
+description: "Issue temporary credentials with MinIO STS endpoints"
+---
+
+The MinIO Security Token Service (STS) issues short-lived credentials for MinIO resources. Temporary credentials work like long-term credentials for making API requests, but with important differences:
+
+- They expire after a configurable duration (15 minutes to 365 days).
+- They do not need to be stored — they are generated on demand and can be refreshed.
+- Expired credentials cannot be reused; no explicit revocation is needed.
+
+## STS endpoints
+
+MinIO implements the following STS actions:
+
+| Action | Description |
+|---|---|
+| `AssumeRole` | Exchange MinIO user credentials for temporary credentials |
+| `AssumeRoleWithWebIdentity` | Exchange an OIDC JWT id_token for temporary credentials |
+| `AssumeRoleWithLDAPIdentity` | Exchange AD/LDAP username and password for temporary credentials |
+| `AssumeRoleWithCustomToken` | Exchange an opaque custom token (verified by an Identity Management Plugin) for temporary credentials |
+| `AssumeRoleWithCertificate` | Exchange a client TLS certificate for temporary credentials |
+
+All STS requests use STS API version `2011-06-15` for AWS compatibility.
+
+## AssumeRole
+
+`AssumeRole` lets an existing MinIO user obtain temporary credentials. The resulting credentials inherit the user's policies. An optional inline `Policy` parameter can further restrict (but not expand) permissions for the session.
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `Action` | string | Yes | Must be `AssumeRole` |
+| `Version` | string | Yes | Must be `2011-06-15` |
+| `DurationSeconds` | integer | No | Session duration; 900–31,536,000 (default: 3600) |
+| `Policy` | string | No | Inline IAM policy JSON (max 2048 chars) to further restrict the session |
+
+### Example request
+
+```sh
+aws --profile foobar --endpoint-url http://localhost:9000 sts assume-role \
+  --policy '{"Version":"2012-10-17","Statement":[{"Sid":"Stmt1","Effect":"Allow","Action":"s3:*","Resource":"arn:aws:s3:::*"}]}' \
+  --role-arn arn:xxx:xxx:xxx:xxxx \
+  --role-session-name mysession
+```
+
+<Note>
+The `--role-arn` and `--role-session-name` parameters are not meaningful for MinIO but are required by the AWS CLI. Set them to any valid-looking value.
+</Note>
+
+### Example response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleResult>
+    <AssumedRoleUser>
+      <Arn/>
+      <AssumeRoleId/>
+    </AssumedRoleUser>
+    <Credentials>
+      <AccessKeyId>Y4RJU1RNFGK48LGO9I2S</AccessKeyId>
+      <SecretAccessKey>sYLRKS1Z7hSjluf6gEbb9066hnx315wHTiACPAjg</SecretAccessKey>
+      <Expiration>2019-08-08T20:26:12Z</Expiration>
+      <SessionToken>eyJhbGci...</SessionToken>
+    </Credentials>
+  </AssumeRoleResult>
+  <ResponseMetadata>
+    <RequestId>c6104cbe-af31-11e0-8154-cbc7ccf896c7</RequestId>
+  </ResponseMetadata>
+</AssumeRoleResponse>
+```
+
+### Starting MinIO for AssumeRole
+
+```sh
+export MINIO_ROOT_USER=minio
+export MINIO_ROOT_PASSWORD=minio123
+minio server ~/data
+```
+
+Create users with `mc admin user add`, then call `AssumeRole` using those user credentials.
+
+## AssumeRoleWithWebIdentity (OIDC)
+
+`AssumeRoleWithWebIdentity` lets applications and users obtain temporary credentials by presenting a JWT `id_token` from any OIDC-compatible provider. No MinIO IAM credentials are required to make the call.
+
+Supported providers include Keycloak, Dex, Casdoor, WSO2, Google, and others.
+
+### Configure MinIO
+
+<Tabs>
+  <Tab title="Keycloak">
+    ```sh
+    export MINIO_ROOT_USER=minio
+    export MINIO_ROOT_PASSWORD=minio123
+    export MINIO_IDENTITY_OPENID_CONFIG_URL=http://localhost:8080/auth/realms/demo/.well-known/openid-configuration
+    export MINIO_IDENTITY_OPENID_CLIENT_ID="843351d4-1080-11ea-aa20-271ecba3924a"
+    minio server /mnt/data
+    ```
+  </Tab>
+  <Tab title="Casdoor">
+    ```sh
+    export MINIO_ROOT_USER=minio
+    export MINIO_ROOT_PASSWORD=minio123
+    export MINIO_IDENTITY_OPENID_CONFIG_URL=http://CASDOOR_ENDPOINT/.well-known/openid-configuration
+    export MINIO_IDENTITY_OPENID_CLIENT_ID="843351d4-1080-11ea-aa20-271ecba3924a"
+    minio server /mnt/data
+    ```
+  </Tab>
+  <Tab title="mc config">
+    ```sh
+    mc admin config set myminio identity_openid \
+      config_url="<CONFIG_URL>" \
+      client_id="<client_identifier>"
+
+    mc admin service restart myminio
+    ```
+  </Tab>
+</Tabs>
+
+### Configuration variables
+
+```sh
+MINIO_IDENTITY_OPENID_ENABLE*               # enable OIDC (on|off)
+MINIO_IDENTITY_OPENID_DISPLAY_NAME          # friendly name shown in Console
+MINIO_IDENTITY_OPENID_CONFIG_URL*           # OIDC discovery document URL
+MINIO_IDENTITY_OPENID_CLIENT_ID*            # OAuth2 client ID
+MINIO_IDENTITY_OPENID_CLIENT_SECRET*        # OAuth2 client secret
+MINIO_IDENTITY_OPENID_ROLE_POLICY           # IAM policy names for all users of this provider
+MINIO_IDENTITY_OPENID_CLAIM_NAME            # JWT claim carrying the policy name (default: 'policy')
+MINIO_IDENTITY_OPENID_SCOPES                # comma-separated OIDC scopes
+MINIO_IDENTITY_OPENID_VENDOR                # vendor hint (e.g. 'keycloak')
+MINIO_IDENTITY_OPENID_KEYCLOAK_REALM        # Keycloak realm name
+MINIO_IDENTITY_OPENID_KEYCLOAK_ADMIN_URL    # Keycloak admin REST API endpoint
+MINIO_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC  # use Host header for dynamic redirect URI (on|off)
+```
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `Action` | string | Yes | Must be `AssumeRoleWithWebIdentity` |
+| `Version` | string | Yes | Must be `2011-06-15` |
+| `WebIdentityToken` | string | Yes | JWT id_token from the OIDC provider (4–2048 chars) |
+| `WebIdentityAccessToken` | string | No | OAuth2 access_token, used to fetch claims from UserInfo endpoint |
+| `RoleArn` | string | No | Required when the provider is configured with a Role Policy |
+| `DurationSeconds` | integer | No | Session duration; 900–31,536,000 (default: 3600 or token expiry) |
+| `Policy` | string | No | Inline IAM policy JSON to further restrict the session |
+
+### JWT claims
+
+When using JWT claim-based access control (not Role Policy), the `id_token` must include a `policy` claim (or a custom claim configured via `MINIO_IDENTITY_OPENID_CLAIM_NAME`) with a policy name:
+
+| Claim | Type | Description |
+|---|---|---|
+| `policy` | string, string[], or comma-separated string | IAM policy name(s) to apply to the session |
+
+### Multiple providers
+
+You can configure multiple OIDC providers simultaneously. Use the `_<name>` suffix to distinguish them:
+
+```sh
+MINIO_IDENTITY_OPENID_CONFIG_URL=http://provider1.example.com/.well-known/openid-configuration
+MINIO_IDENTITY_OPENID_CLIENT_ID=app1
+MINIO_IDENTITY_OPENID_ROLE_POLICY=readwrite
+
+MINIO_IDENTITY_OPENID_CONFIG_URL_APP2=http://provider2.example.com/.well-known/openid-configuration
+MINIO_IDENTITY_OPENID_CLIENT_ID_APP2=app2
+MINIO_IDENTITY_OPENID_ROLE_POLICY_APP2=readonly
+```
+
+Any number of Role Policy providers may be configured; at most one JWT claim-based provider may be configured per cluster.
+
+### Authorization flow
+
+<Steps>
+  <Step title="User initiates login">
+    The user opens the MinIO Console and selects an OIDC provider. MinIO redirects the user to the provider's login page.
+  </Step>
+  <Step title="User authenticates">
+    The user completes authentication at the provider (credentials, MFA, etc.).
+  </Step>
+  <Step title="Token issued">
+    The provider redirects back to MinIO with a JWT `id_token` (and optionally an `access_token`).
+  </Step>
+  <Step title="STS call">
+    MinIO calls `AssumeRoleWithWebIdentity` with the token and returns temporary credentials.
+  </Step>
+  <Step title="Credentials used">
+    The application uses the temporary `AccessKeyId`, `SecretAccessKey`, and `SessionToken` to sign MinIO API requests.
+  </Step>
+</Steps>
+
+### Example response
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AssumeRoleWithWebIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <AssumeRoleWithWebIdentityResult>
+    <Credentials>
+      <AccessKeyId>Y4RJU1RNFGK48LGO9I2S</AccessKeyId>
+      <SecretAccessKey>sYLRKS1Z7hSjluf6gEbb9066hnx315wHTiACPAjg</SecretAccessKey>
+      <Expiration>2019-08-08T20:26:12Z</Expiration>
+      <SessionToken>eyJhbGci...</SessionToken>
+    </Credentials>
+  </AssumeRoleWithWebIdentityResult>
+  <ResponseMetadata/>
+</AssumeRoleWithWebIdentityResponse>
+```
+
+## AssumeRoleWithLDAPIdentity
+
+`AssumeRoleWithLDAPIdentity` lets AD/LDAP users obtain temporary credentials using their directory username and password.
+
+### Login flow
+
+<Steps>
+  <Step title="User submits credentials">
+    The application sends the user's LDAP username and password to the STS API.
+  </Step>
+  <Step title="MinIO looks up the user">
+    MinIO uses its read-only lookup bind account to find the user's Distinguished Name (DN) in the LDAP directory.
+  </Step>
+  <Step title="MinIO verifies credentials">
+    MinIO verifies the user's password by binding to the LDAP server as the user DN.
+  </Step>
+  <Step title="Group lookup">
+    MinIO optionally queries the LDAP server for the user's group memberships.
+  </Step>
+  <Step title="Policy evaluation">
+    MinIO checks for IAM policies associated with the user DN or any of the user's groups. At least one policy must exist.
+  </Step>
+  <Step title="Credentials returned">
+    MinIO issues temporary credentials with the applicable policies encoded in the session token.
+  </Step>
+</Steps>
+
+### Configure MinIO
+
+```sh
+export MINIO_ROOT_USER=minio
+export MINIO_ROOT_PASSWORD=minio123
+export MINIO_IDENTITY_LDAP_SERVER_ADDR='my.ldap-active-dir-server.com:636'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN='cn=admin,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD=admin
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN='ou=users,dc=min,dc=io'
+export MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(uid=%s)'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN='dc=minioad,dc=local;dc=somedomain,dc=com'
+export MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER='(&(objectclass=groupOfNames)(member=%d))'
+minio server ~/data
+```
+
+### Configuration variables
+
+| Variable | Description |
+|---|---|
+| `MINIO_IDENTITY_LDAP_SERVER_ADDR` | AD/LDAP server address and port (default port: 636) |
+| `MINIO_IDENTITY_LDAP_SRV_RECORD_NAME` | DNS SRV record name: `ldap`, `ldaps`, or `on` |
+| `MINIO_IDENTITY_LDAP_LOOKUP_BIND_DN` | DN of read-only service account for directory lookups |
+| `MINIO_IDENTITY_LDAP_LOOKUP_BIND_PASSWORD` | Password for the lookup bind account |
+| `MINIO_IDENTITY_LDAP_USER_DN_SEARCH_BASE_DN` | Semicolon-separated list of base DNs for user search |
+| `MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER` | LDAP filter to find a user's DN; `%s` is replaced with the username |
+| `MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER` | LDAP filter to find user groups; `%s` = username, `%d` = user DN |
+| `MINIO_IDENTITY_LDAP_GROUP_SEARCH_BASE_DN` | Semicolon-separated list of base DNs for group search |
+| `MINIO_IDENTITY_LDAP_TLS_SKIP_VERIFY` | Skip TLS certificate verification (default: `off`) |
+| `MINIO_IDENTITY_LDAP_SERVER_INSECURE` | Allow plain-text connection (default: `off`) |
+| `MINIO_IDENTITY_LDAP_SERVER_STARTTLS` | Use StartTLS connection (default: `off`) |
+
+<Warning>
+Use TLS or StartTLS connections to your LDAP server. Plain-text connections expose user credentials to anyone monitoring network traffic.
+</Warning>
+
+### Nested groups (Active Directory)
+
+For AD environments using nested group membership, use the `LDAP_MATCHING_RULE_IN_CHAIN` OID:
+
+```sh
+MINIO_IDENTITY_LDAP_GROUP_SEARCH_FILTER='(&(objectClass=group)(member:1.2.840.113556.1.4.1941:=%d))'
+MINIO_IDENTITY_LDAP_USER_DN_SEARCH_FILTER='(&(memberOf:1.2.840.113556.1.4.1941:=CN=mygroup,DC=dc,DC=net)(sAMAccountName=%s))'
+```
+
+### Parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `Action` | string | Yes | Must be `AssumeRoleWithLDAPIdentity` |
+| `Version` | string | Yes | Must be `2011-06-15` |
+| `LDAPUsername` | string | Yes | AD/LDAP username (2–2048 chars) |
+| `LDAPPassword` | string | Yes | AD/LDAP password (4–2048 chars) |
+| `DurationSeconds` | integer | No | Session duration; 900–31,536,000 (default: 3600) |
+| `Policy` | string | No | Inline IAM policy JSON to further restrict the session |
+
+### Example request
+
+```
+POST http://minio.cluster:9000?Action=AssumeRoleWithLDAPIdentity&LDAPUsername=foouser&LDAPPassword=foouserpassword&Version=2011-06-15&DurationSeconds=7200
+```
+
+### Attaching policies to LDAP users and groups
+
+```sh
+# Create a policy
+mc admin policy create myminio mypolicy mypolicy.json
+
+# Attach to an LDAP user
+mc idp ldap policy attach myminio mypolicy \
+  --user='uid=alice,cn=accounts,dc=myldapserver,dc=com'
+
+# Attach to an LDAP group
+mc idp ldap policy attach myminio mypolicy \
+  --group='cn=projectx,ou=groups,dc=myldapserver,dc=com'
+```
+
+<Note>
+By default no policy is attached to LDAP users. A user with no policy gets `Access Denied` on all object storage requests.
+</Note>
+
+## AssumeRoleWithCustomToken
+
+`AssumeRoleWithCustomToken` enables integration with custom authentication systems via the Identity Management Plugin. MinIO forwards the token to a configured HTTP(S) webhook for verification.
+
+### Configure the Identity Management Plugin
+
+```sh
+export MINIO_IDENTITY_PLUGIN_URL=http://localhost:8181/path/to/endpoint
+export MINIO_IDENTITY_PLUGIN_AUTH_TOKEN=my-auth-token   # optional
+export MINIO_IDENTITY_PLUGIN_ROLE_POLICY=readwrite       # required
+minio server /data
+```
+
+MinIO prints the Role ARN at startup. Include it in `AssumeRoleWithCustomToken` calls.
+
+### Plugin API contract
+
+For each `AssumeRoleWithCustomToken` call, MinIO makes a `POST` request to the plugin endpoint with a `token` query parameter.
+
+**On success** (HTTP 200):
+
+```json
+{
+    "user": "alice",
+    "maxValiditySeconds": 3600,
+    "claims": {
+        "department": "engineering"
+    }
+}
+```
+
+**On failure** (HTTP 403):
+
+```json
+{
+    "reason": "token expired"
+}
+```
+
+## Token duration and refresh
+
+All STS endpoints accept an optional `DurationSeconds` parameter:
+
+| Bound | Value |
+|---|---|
+| Minimum | 900 seconds (15 minutes) |
+| Maximum | 31,536,000 seconds (365 days) |
+| Default | 3600 seconds (1 hour) |
+
+For `AssumeRoleWithWebIdentity`, if `DurationSeconds` is not specified, the session duration is derived from the `exp` claim in the JWT token.
+
+Applications should request new temporary credentials before the current credentials expire. Expired credentials are rejected; there is no grace period.

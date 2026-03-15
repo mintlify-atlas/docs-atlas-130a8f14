@@ -1,0 +1,119 @@
+---
+title: "Standalone deployment"
+description: "Deploy MinIO on a single node with one or more drives"
+---
+
+A standalone MinIO deployment runs on a single node. You can start with a single drive for development and testing, or use multiple drives to enable erasure coding for data protection.
+
+<Note>
+  The MinIO community edition is distributed as source code only. Install it with `go install github.com/minio/minio@latest` or build a Docker image from the provided Dockerfile. See the [Docker deployment](/deployment/docker) page for container-based options.
+</Note>
+
+## Prerequisites
+
+- MinIO binary installed (via `go install github.com/minio/minio@latest` or built from source)
+- One or more empty directories or drives available
+- Go 1.24 or later (if building from source)
+
+## Deploy MinIO
+
+<Steps>
+  <Step title="Set root credentials">
+    Export your root credentials as environment variables before starting the server. If you skip this step, MinIO uses the default credentials `minioadmin:minioadmin`.
+
+    ```sh
+    export MINIO_ROOT_USER=your-access-key
+    export MINIO_ROOT_PASSWORD=your-secret-key
+    ```
+
+    <Warning>
+      Do not use the default credentials in any environment that is accessible over a network. Always set strong, unique credentials before exposing MinIO to other services or users.
+    </Warning>
+  </Step>
+
+  <Step title="Start the server">
+    Choose the configuration that matches your setup.
+
+    <Tabs>
+      <Tab title="Single drive">
+        Start MinIO with a single data directory. MinIO runs without erasure coding in this mode — it is suitable for development and testing only.
+
+        ```sh
+        minio server /data
+        ```
+      </Tab>
+      <Tab title="Multiple drives (erasure coding)">
+        Pass multiple drive paths using the ellipsis notation to enable erasure coding. MinIO automatically determines the erasure set size based on the number of drives.
+
+        ```sh
+        minio server /data{1...4}
+        ```
+
+        This starts MinIO with four drives and erasure coding enabled. The total number of drives must be a multiple of an integer between 2 and 16.
+
+        <Tip>
+          Always use three dots `{1...4}` in the ellipsis notation. Using two dots `{1..4}` causes your shell to expand the expression before passing it to MinIO, which breaks erasure coding distribution.
+        </Tip>
+      </Tab>
+      <Tab title="Multiple paths across controllers">
+        You can span drives across controllers for better I/O distribution:
+
+        ```sh
+        minio server /mnt/controller{1...4}/data{1...16}
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Set the console address (optional)">
+    By default, MinIO serves the web console on a random port. Use `--console-address` to bind it to a specific port.
+
+    ```sh
+    minio server /data --console-address :9001
+    ```
+
+    The S3 API is always available on port `9000`. After setting the console address, you can access:
+
+    | Interface | URL |
+    |---|---|
+    | S3 API | `http://127.0.0.1:9000` |
+    | Web Console | `http://127.0.0.1:9001` |
+  </Step>
+
+  <Step title="Verify the deployment">
+    Open your browser and navigate to the console URL. Log in with your `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` credentials.
+
+    Alternatively, use the MinIO Client `mc` to verify connectivity:
+
+    ```sh
+    mc alias set local http://localhost:9000 your-access-key your-secret-key
+    mc admin info local
+    ```
+  </Step>
+</Steps>
+
+## Environment variables
+
+The following environment variables control the core behavior of a standalone MinIO server.
+
+| Variable | Description | Default |
+|---|---|---|
+| `MINIO_ROOT_USER` | Root user access key | `minioadmin` |
+| `MINIO_ROOT_PASSWORD` | Root user secret key | `minioadmin` |
+| `MINIO_VOLUMES` | Data directory or directories | — |
+| `MINIO_DOMAIN` | Enable bucket DNS-style access | — |
+
+## Test with the MinIO Client
+
+Once the server is running, you can use `mc` to create buckets and manage objects:
+
+```sh
+mc alias set local http://localhost:9000 your-access-key your-secret-key
+mc mb local/my-bucket
+mc cp ~/myfile.txt local/my-bucket/
+mc ls local/my-bucket/
+```
+
+<Note>
+  Production environments running MinIO compiled from source do so at their own risk. The AGPLv3 license provides no warranties for such usage.
+</Note>

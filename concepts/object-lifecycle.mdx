@@ -1,0 +1,331 @@
+---
+title: "Object lifecycle management"
+description: "Automate object transitions and expiration with lifecycle policies"
+---
+
+MinIO's Information Lifecycle Management (ILM) lets you define rules that automatically expire or transition objects based on age, prefix, or tags. This reduces storage costs and eliminates manual cleanup of stale data.
+
+<Note>
+  Tiering (transition) rules require erasure-coded or distributed erasure-coded deployments. ILM expiration rules work in all deployment modes.
+</Note>
+
+## Core concepts
+
+- **Expiration rules** — permanently delete objects (or specific versions) after a set number of days or on a specific date
+- **Transition rules** — move objects to a remote tier (GCS, AWS S3, Azure Blob, or another MinIO cluster) after a set number of days
+- **Rules** are scoped to a bucket and can be filtered by prefix and/or object tags
+- Multiple rules can be active on a single bucket simultaneously
+
+## Setting lifecycle policies
+
+<Tabs>
+  <Tab title="mc CLI">
+    Import a lifecycle policy JSON from stdin:
+
+    ```sh
+    mc ilm import myminio/mybucket <<EOF
+    {
+      "Rules": [
+        {
+          "ID": "OldPictures",
+          "Status": "Enabled",
+          "Filter": { "Prefix": "old/" },
+          "Expiration": { "Date": "2020-01-01T00:00:00.000Z" }
+        },
+        {
+          "ID": "TempUploads",
+          "Status": "Enabled",
+          "Filter": { "Prefix": "temp/" },
+          "Expiration": { "Days": 7 }
+        }
+      ]
+    }
+    EOF
+    ```
+
+    List active lifecycle rules:
+
+    ```sh
+    mc ilm ls myminio/mybucket
+    ```
+
+    Add a single rule using flags:
+
+    ```sh
+    mc ilm rule add --expire-days 30 --prefix "logs/" myminio/mybucket
+    ```
+  </Tab>
+  <Tab title="S3 API (JSON)">
+    Use the AWS S3 `PutBucketLifecycleConfiguration` API with a JSON body:
+
+    ```json
+    {
+      "Rules": [
+        {
+          "ID": "OldPictures",
+          "Status": "Enabled",
+          "Filter": { "Prefix": "old/" },
+          "Expiration": { "Date": "2020-01-01T00:00:00.000Z" }
+        },
+        {
+          "ID": "TempUploads",
+          "Status": "Enabled",
+          "Filter": { "Prefix": "temp/" },
+          "Expiration": { "Days": 7 }
+        }
+      ]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Expiration rules
+
+Expiration rules delete objects that match the filter criteria once the specified age threshold is met.
+
+### Expire by date
+
+Delete all objects under prefix `old/` on a specific date:
+
+```json
+{
+  "Rules": [{
+    "ID": "OldPictures",
+    "Status": "Enabled",
+    "Filter": { "Prefix": "old/" },
+    "Expiration": { "Date": "2020-01-01T00:00:00.000Z" }
+  }]
+}
+```
+
+### Expire by age
+
+Delete objects under prefix `temp/` after 7 days:
+
+```json
+{
+  "Rules": [{
+    "ID": "TempUploads",
+    "Status": "Enabled",
+    "Filter": { "Prefix": "temp/" },
+    "Expiration": { "Days": 7 }
+  }]
+}
+```
+
+## Versioning-aware expiration rules
+
+The following rules only apply to [versioning-enabled buckets](/concepts/versioning).
+
+### Expire noncurrent versions
+
+A noncurrent version is any version that is not the latest for a given object. Remove noncurrent versions older than one year under `user-uploads/`:
+
+<Tabs>
+  <Tab title="mc CLI">
+    ```sh
+    mc ilm rule add \
+      --noncurrent-expire-days 365 \
+      --prefix "user-uploads/" \
+      myminio/mydata
+    ```
+  </Tab>
+  <Tab title="JSON">
+    ```json
+    {
+      "Rules": [{
+        "ID": "Removing all old versions",
+        "Status": "Enabled",
+        "Filter": { "Prefix": "users-uploads/" },
+        "NoncurrentVersionExpiration": { "NoncurrentDays": 365 }
+      }]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Keep only the N most recent noncurrent versions
+
+Keep the 5 most recent noncurrent versions, expiring the rest 30 days after they become noncurrent:
+
+<Tabs>
+  <Tab title="mc CLI">
+    ```sh
+    mc ilm rule add \
+      --noncurrent-expire-days 30 \
+      --noncurrent-expire-newer 5 \
+      --prefix "user-uploads/" \
+      myminio/mydata
+    ```
+  </Tab>
+  <Tab title="JSON">
+    ```json
+    {
+      "Rules": [{
+        "ID": "Keep only most recent 5 noncurrent versions",
+        "Status": "Enabled",
+        "Filter": { "Prefix": "users-uploads/" },
+        "NoncurrentVersionExpiration": {
+          "NewerNoncurrentVersions": 5,
+          "NoncurrentDays": 30
+        }
+      }]
+    }
+    ```
+  </Tab>
+</Tabs>
+
+### Immediate cleanup beyond N noncurrent versions (MinIO extension)
+
+MinIO extends `NewerNoncurrentVersions` to support immediate cleanup when the number of noncurrent versions exceeds N, without waiting for `NoncurrentDays`:
+
+```json
+{
+  "Rules": [{
+    "ID": "Keep only most recent 5 noncurrent versions",
+    "Status": "Enabled",
+    "Filter": { "Prefix": "users-uploads/" },
+    "NoncurrentVersionExpiration": {
+      "NewerNoncurrentVersions": 5
+    }
+  }]
+}
+```
+
+Omitting `NoncurrentDays` implies an implicit zero, triggering immediate expiry of excess versions.
+
+### Expire all versions when the latest expires (MinIO extension)
+
+When the latest version of an object satisfies the expiration criteria, remove all versions simultaneously:
+
+```json
+{
+  "Rules": [{
+    "ID": "Purge all versions of an expired object",
+    "Status": "Enabled",
+    "Filter": { "Prefix": "users-uploads/" },
+    "Expiration": {
+      "Days": 7,
+      "ExpiredObjectAllVersions": true
+    }
+  }]
+}
+```
+
+<Note>
+  If the latest version is a delete marker and its modification time satisfies `Expiration.Days`, all versions of the object are immediately purged. Tag-based filtering is ignored in this case.
+</Note>
+
+### Remove orphaned delete markers
+
+When an object has only a single delete marker remaining (all data versions have been deleted), automatically remove that delete marker:
+
+```json
+{
+  "Rules": [{
+    "ID": "Removing all delete markers",
+    "Status": "Enabled",
+    "Expiration": { "ExpiredObjectDeleteMarker": true }
+  }]
+}
+```
+
+## Transition rules (tiering)
+
+Transition rules move objects to a remote storage tier after a defined number of days. MinIO supports tiering to:
+
+<CardGroup cols={2}>
+  <Card title="AWS S3" icon="aws">
+    Tier to S3 buckets, including using IAM role credentials attached to EC2 instances.
+  </Card>
+  <Card title="Google Cloud Storage" icon="google">
+    Tier to GCS buckets using access key and secret key credentials.
+  </Card>
+  <Card title="Azure Blob Storage" icon="microsoft">
+    Tier to Azure Blob containers using account name and account key.
+  </Card>
+  <Card title="MinIO" icon="server">
+    Tier to another MinIO cluster for warm or cold storage.
+  </Card>
+</CardGroup>
+
+### Setting up a transition tier
+
+<Steps>
+  <Step title="Create a remote tier">
+    Register a remote storage tier using `mc admin tier add`. The following example creates a tier named `AZURETIER` pointing to a prefix in an Azure Blob container:
+
+    ```sh
+    mc admin tier add azure myminio AZURETIER \
+      --endpoint https://blob.core.windows.net \
+      --access-key AZURE_ACCOUNT_NAME \
+      --secret-key AZURE_ACCOUNT_KEY \
+      --bucket azurebucket \
+      --prefix testprefix1/
+    ```
+
+    For S3 using an AWS role attached to EC2 (no explicit credentials):
+
+    ```sh
+    mc admin tier add s3 myminio S3TIER \
+      --bucket s3bucket \
+      --prefix testprefix/ \
+      --use-aws-role
+    ```
+
+    <Info>
+      The admin user running this command requires the `admin:SetTier` and `admin:ListTier` permissions if not running as root.
+    </Info>
+  </Step>
+
+  <Step title="Add a lifecycle rule with transition">
+    Apply a transition rule that moves objects to `AZURETIER` after 45 days and expires them after 365 days:
+
+    ```sh
+    mc ilm add \
+      --expiry-days 365 \
+      --transition-days 45 \
+      --storage-class "AZURETIER" \
+      myminio/srcbucket
+    ```
+  </Step>
+
+  <Step title="Access transitioned objects">
+    GET or HEAD on a transitioned object streams the content directly from the remote tier — no manual action required.
+
+    To temporarily restore a transitioned object to local MinIO storage, use the S3 RestoreObject API:
+
+    ```sh
+    aws s3api restore-object \
+      --bucket srcbucket \
+      --key myobject \
+      --restore-request Days=3
+    ```
+
+    The restored copy is automatically removed by the MinIO scanner after the restore period expires.
+  </Step>
+</Steps>
+
+### How tiering works internally
+
+When an object meets a transition rule, the MinIO scanner (which runs at one-minute intervals, scanning one-sixteenth of the namespace each cycle) moves the object data to the remote tier. Only the object **metadata** remains on MinIO; the data content lives on the remote tier.
+
+Transitioned object data is stored at the tier's configured `bucket/prefix` under a path derived from a randomly generated UUID, for example:
+
+```
+azurebucket/testprefix1/0b/c4/0bc4fab7-2daf-4d2f-8e39-5c6c6fb7e2d3
+```
+
+This naming scheme works regardless of whether the remote tier supports versioning.
+
+### Monitoring transition events
+
+MinIO emits `s3:ObjectTransition:Complete` and `s3:ObjectTransition:Failed` events for transition operations. Enable bucket notifications to watch for these events:
+
+```sh
+mc event add myminio/srcbucket arn:... --event ilm
+```
+
+<Note>
+  Transition event notifications are a MinIO extension and are not part of the AWS S3 specification.
+</Note>

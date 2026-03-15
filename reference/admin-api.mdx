@@ -1,0 +1,592 @@
+---
+title: "Admin API reference"
+description: "MinIO admin API for server management, user management, and configuration"
+---
+
+The MinIO admin API is available at `/_minio/admin/v3/` and requires admin credentials for all operations. All requests must be authenticated using AWS Signature Version 4.
+
+<Warning>
+Admin API endpoints require root or admin-level credentials. Never expose the admin API to untrusted networks.
+</Warning>
+
+## Base path
+
+```
+https://<host>/_minio/admin/v3/<endpoint>
+```
+
+All endpoints documented on this page are relative to this base path.
+
+## Server operations
+
+<AccordionGroup>
+  <Accordion title="ServerInfo">
+    **GET /info**
+
+    Returns detailed information about the MinIO server, including version, uptime, region, deployment ID, and backend storage details.
+
+    ```bash
+    mc admin info alias/
+    ```
+  </Accordion>
+
+  <Accordion title="StorageInfo">
+    **GET /storageinfo**
+
+    Returns storage utilization across all drives, including total capacity, used space, and per-drive health.
+  </Accordion>
+
+  <Accordion title="DataUsageInfo">
+    **GET /datausageinfo**
+
+    Returns object count and size statistics per bucket.
+  </Accordion>
+
+  <Accordion title="Metrics">
+    **GET /metrics**
+
+    Returns server metrics in a structured format covering throughput, latency, and error rates.
+  </Accordion>
+
+  <Accordion title="HealthInfo">
+    **GET /healthinfo**
+
+    Returns a comprehensive health report including hardware, software, and network diagnostics.
+  </Accordion>
+
+  <Accordion title="Service">
+    **POST /service?action=\{action\}&type=2** — ServiceV2
+
+    **POST /service?action=\{action\}** — Service (deprecated)
+
+    Restart or stop the MinIO server. Valid actions are `restart` and `stop`.
+
+    ```bash
+    mc admin service restart alias/
+    ```
+  </Accordion>
+
+  <Accordion title="Update">
+    **POST /update?updateURL=\{url\}&type=2** — ServerUpdateV2
+
+    **POST /update?updateURL=\{url\}** — ServerUpdate (deprecated)
+
+    Triggers an online update of the MinIO binary from the specified URL.
+  </Accordion>
+
+  <Accordion title="InspectData">
+    **GET|POST /inspect-data**
+
+    Downloads raw metadata files for debugging purposes. Output is a ZIP archive.
+  </Accordion>
+
+  <Accordion title="Trace">
+    **GET /trace**
+
+    Opens a server-sent event stream of HTTP trace logs for live debugging.
+  </Accordion>
+
+  <Accordion title="ConsoleLog">
+    **GET /log**
+
+    Returns recent server console log entries.
+  </Accordion>
+</AccordionGroup>
+
+## Healing operations
+
+Healing operations are only available on erasure-coded deployments.
+
+<AccordionGroup>
+  <Accordion title="Heal">
+    **POST /heal/**
+
+    **POST /heal/\{bucket\}**
+
+    **POST /heal/\{bucket\}/\{prefix\}**
+
+    Initiates a heal operation on the entire deployment, a specific bucket, or a key prefix within a bucket.
+
+    ```bash
+    mc admin heal -r alias/
+    mc admin heal -r alias/my-bucket
+    ```
+  </Accordion>
+
+  <Accordion title="BackgroundHealStatus">
+    **POST /background-heal/status**
+
+    Returns the status of the background healing process.
+  </Accordion>
+</AccordionGroup>
+
+## Pool and rebalance operations
+
+Available on distributed erasure-coded deployments only.
+
+<AccordionGroup>
+  <Accordion title="Pool operations">
+    **GET /pools/list** — ListPools
+
+    **GET /pools/status?pool=\{pool\}** — StatusPool
+
+    **POST /pools/decommission?pool=\{pool\}** — StartDecommission
+
+    **POST /pools/cancel?pool=\{pool\}** — CancelDecommission
+
+    Manage server pools in a multi-pool deployment. Decommissioning safely migrates all data off a pool before it is removed.
+
+    ```bash
+    mc admin decommission start alias/ http://server{1...4}/data{1...4}
+    mc admin decommission status alias/
+    ```
+  </Accordion>
+
+  <Accordion title="Rebalance operations">
+    **POST /rebalance/start** — RebalanceStart
+
+    **GET /rebalance/status** — RebalanceStatus
+
+    **POST /rebalance/stop** — RebalanceStop
+
+    Rebalance distributes objects evenly across server pools when pool utilization is uneven.
+  </Accordion>
+</AccordionGroup>
+
+## IAM — User management
+
+<AccordionGroup>
+  <Accordion title="AddUser">
+    **PUT /add-user?accessKey=\{key\}**
+
+    Creates a new MinIO user. The request body contains the secret key and optional group memberships.
+
+    ```bash
+    mc admin user add alias/ newuser secretpassword
+    ```
+  </Accordion>
+
+  <Accordion title="RemoveUser">
+    **DELETE /remove-user?accessKey=\{key\}**
+
+    Permanently removes a user and all associated service accounts.
+  </Accordion>
+
+  <Accordion title="ListUsers">
+    **GET /list-users** — all users
+
+    **GET /list-users?bucket=\{bucket\}** — users with access to a specific bucket
+
+    ```bash
+    mc admin user list alias/
+    ```
+  </Accordion>
+
+  <Accordion title="GetUserInfo">
+    **GET /user-info?accessKey=\{key\}**
+
+    Returns the policy attachments and group memberships for a user.
+  </Accordion>
+
+  <Accordion title="SetUserStatus">
+    **PUT /set-user-status?accessKey=\{key\}&status=\{status\}**
+
+    Enables or disables a user account. Valid statuses are `enabled` and `disabled`.
+  </Accordion>
+
+  <Accordion title="AccountInfo">
+    **GET /accountinfo**
+
+    Returns storage usage and policy information for the currently authenticated user.
+  </Accordion>
+</AccordionGroup>
+
+## IAM — Group management
+
+<AccordionGroup>
+  <Accordion title="UpdateGroupMembers">
+    **PUT /update-group-members**
+
+    Adds or removes members from a group. Groups are created implicitly when the first member is added.
+
+    ```bash
+    mc admin group add alias/ my-group user1 user2
+    ```
+  </Accordion>
+
+  <Accordion title="GetGroup">
+    **GET /group?group=\{group\}**
+
+    Returns the membership list and policy attachments for a group.
+  </Accordion>
+
+  <Accordion title="ListGroups">
+    **GET /groups**
+
+    Lists all groups defined on the server.
+  </Accordion>
+
+  <Accordion title="SetGroupStatus">
+    **PUT /set-group-status?group=\{group\}&status=\{status\}**
+
+    Enables or disables all members of a group simultaneously.
+  </Accordion>
+</AccordionGroup>
+
+## IAM — Policy management
+
+<AccordionGroup>
+  <Accordion title="AddCannedPolicy">
+    **PUT /add-canned-policy?name=\{name\}**
+
+    Creates or replaces a named IAM policy. The request body is a JSON IAM policy document.
+
+    ```bash
+    mc admin policy create alias/ my-policy policy.json
+    ```
+  </Accordion>
+
+  <Accordion title="InfoCannedPolicy">
+    **GET /info-canned-policy?name=\{name\}**
+
+    Returns the JSON document for a named policy.
+  </Accordion>
+
+  <Accordion title="ListCannedPolicies">
+    **GET /list-canned-policies** — all policies
+
+    **GET /list-canned-policies?bucket=\{bucket\}** — policies scoped to a bucket
+  </Accordion>
+
+  <Accordion title="RemoveCannedPolicy">
+    **DELETE /remove-canned-policy?name=\{name\}**
+
+    Deletes a named policy. The policy must not be attached to any user or group.
+  </Accordion>
+
+  <Accordion title="SetPolicyForUserOrGroup">
+    **PUT /set-user-or-group-policy?policyName=\{name\}&userOrGroup=\{entity\}&isGroup=\{bool\}**
+
+    Attaches a canned policy to a user or group.
+  </Accordion>
+
+  <Accordion title="AttachDetachPolicyBuiltin">
+    **POST /idp/builtin/policy/\{operation\}**
+
+    Attach or detach one or more policies to users or groups in a single call. Valid operations are `attach` and `detach`.
+  </Accordion>
+
+  <Accordion title="ListPolicyMappingEntities">
+    **GET /idp/builtin/policy-entities**
+
+    Returns all users and groups attached to each policy.
+  </Accordion>
+
+  <Accordion title="ExportIAM / ImportIAM">
+    **GET /export-iam** — ExportIAM
+
+    **PUT /import-iam** — ImportIAM
+
+    **PUT /import-iam-v2** — ImportIAMV2
+
+    Export all IAM configuration to a ZIP archive, or import it from one. Useful for migrating IAM configuration between clusters.
+  </Accordion>
+</AccordionGroup>
+
+## IAM — Service accounts
+
+<AccordionGroup>
+  <Accordion title="AddServiceAccount">
+    **PUT /add-service-account**
+
+    Creates a service account (access key) scoped under the currently authenticated user.
+
+    ```bash
+    mc admin user svcacct add alias/ username
+    ```
+  </Accordion>
+
+  <Accordion title="UpdateServiceAccount">
+    **POST /update-service-account?accessKey=\{key\}**
+
+    Updates the policy, expiry, or description of an existing service account.
+  </Accordion>
+
+  <Accordion title="InfoServiceAccount">
+    **GET /info-service-account?accessKey=\{key\}**
+
+    Returns metadata for a service account, including the parent user and attached policy.
+  </Accordion>
+
+  <Accordion title="ListServiceAccounts">
+    **GET /list-service-accounts**
+
+    Lists all service accounts owned by the current user.
+  </Accordion>
+
+  <Accordion title="DeleteServiceAccount">
+    **DELETE /delete-service-account?accessKey=\{key\}**
+
+    Deletes a service account permanently.
+  </Accordion>
+
+  <Accordion title="TemporaryAccountInfo">
+    **GET /temporary-account-info?accessKey=\{key\}**
+
+    Returns information about an STS-issued temporary credential.
+  </Accordion>
+
+  <Accordion title="ListAccessKeysBulk">
+    **GET /list-access-keys-bulk?listType=\{type\}**
+
+    Lists access keys (service accounts and STS credentials) across all users. Requires admin privileges.
+  </Accordion>
+</AccordionGroup>
+
+## IAM — Identity providers
+
+<AccordionGroup>
+  <Accordion title="Identity provider config">
+    **PUT /idp-config/\{type\}/\{name\}** — AddIdentityProviderCfg
+
+    **POST /idp-config/\{type\}/\{name\}** — UpdateIdentityProviderCfg
+
+    **GET /idp-config/\{type\}** — ListIdentityProviderCfg
+
+    **GET /idp-config/\{type\}/\{name\}** — GetIdentityProviderCfg
+
+    **DELETE /idp-config/\{type\}/\{name\}** — DeleteIdentityProviderCfg
+
+    Manage OpenID Connect and LDAP identity provider configurations. Valid types are `openid` and `ldap`.
+  </Accordion>
+
+  <Accordion title="LDAP operations">
+    **PUT /idp/ldap/add-service-account** — AddServiceAccountLDAP
+
+    **GET /idp/ldap/list-access-keys?userDN=\{dn\}&listType=\{type\}** — ListAccessKeysLDAP
+
+    **GET /idp/ldap/list-access-keys-bulk?listType=\{type\}** — ListAccessKeysLDAPBulk
+
+    **GET /idp/ldap/policy-entities** — ListLDAPPolicyMappingEntities
+
+    **POST /idp/ldap/policy/\{operation\}** — AttachDetachPolicyLDAP
+  </Accordion>
+
+  <Accordion title="RevokeTokens">
+    **POST /revoke-tokens/\{userProvider\}**
+
+    Revokes all outstanding STS tokens issued for users of a specific identity provider.
+  </Accordion>
+</AccordionGroup>
+
+## Bucket management
+
+<AccordionGroup>
+  <Accordion title="Bucket quota">
+    **GET /get-bucket-quota?bucket=\{bucket\}** — GetBucketQuotaConfig
+
+    **PUT /set-bucket-quota?bucket=\{bucket\}** — PutBucketQuotaConfig
+
+    Set or retrieve hard quota limits on a bucket. Once the quota is reached, new writes are rejected.
+
+    ```bash
+    mc admin bucket quota alias/my-bucket --hard 10GiB
+    ```
+  </Accordion>
+
+  <Accordion title="Remote targets (bucket replication)">
+    **GET /list-remote-targets?bucket=\{bucket\}&type=\{type\}** — ListRemoteTargetsHandler
+
+    **PUT /set-remote-target?bucket=\{bucket\}** — SetRemoteTargetHandler
+
+    **DELETE /remove-remote-target?bucket=\{bucket\}&arn=\{arn\}** — RemoveRemoteTargetHandler
+
+    **POST /replication/diff?bucket=\{bucket\}** — ReplicationDiffHandler
+
+    **GET /replication/mrf?bucket=\{bucket\}** — ReplicationMRFHandler
+
+    Manage replication targets and inspect replication status.
+  </Accordion>
+
+  <Accordion title="Bucket metadata export/import">
+    **GET /export-bucket-metadata** — ExportBucketMetadataHandler
+
+    **PUT /import-bucket-metadata** — ImportBucketMetadataHandler
+
+    Export or import bucket configuration (lifecycle, notifications, replication, etc.) as a ZIP archive.
+  </Accordion>
+</AccordionGroup>
+
+## Tiering
+
+<AccordionGroup>
+  <Accordion title="Tier management">
+    **PUT /tier** — AddTierHandler
+
+    **POST /tier/\{tier\}** — EditTierHandler
+
+    **GET /tier** — ListTierHandler
+
+    **DELETE /tier/\{tier\}** — RemoveTierHandler
+
+    **GET /tier/\{tier\}** — VerifyTierHandler
+
+    **GET /tier-stats** — TierStatsHandler
+
+    Manage remote storage tiers for object lifecycle transitions. Supported backends include AWS S3, Google Cloud Storage, and Azure Blob Storage.
+
+    ```bash
+    mc ilm tier add s3 alias/ WARM_TIER \
+      --access-key ACCESS_KEY \
+      --secret-key SECRET_KEY \
+      --bucket warm-bucket \
+      --region us-east-1
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Batch jobs
+
+<AccordionGroup>
+  <Accordion title="Batch job operations">
+    **POST /start-job** — StartBatchJob
+
+    **GET /list-jobs** — ListBatchJobs
+
+    **GET /status-job** — BatchJobStatus
+
+    **GET /describe-job** — DescribeBatchJob
+
+    **DELETE /cancel-job** — CancelBatchJob
+
+    Manage batch jobs for bulk object replication, key rotation, and expiration.
+
+    ```bash
+    mc batch start alias/ batch-job.yaml
+    mc batch list alias/
+    mc batch status alias/ job-id
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Site replication
+
+<AccordionGroup>
+  <Accordion title="Site replication operations">
+    **PUT /site-replication/add** — SiteReplicationAdd
+
+    **PUT /site-replication/remove** — SiteReplicationRemove
+
+    **GET /site-replication/info** — SiteReplicationInfo
+
+    **GET /site-replication/metainfo** — SiteReplicationMetaInfo
+
+    **GET /site-replication/status** — SiteReplicationStatus
+
+    **PUT /site-replication/edit** — SiteReplicationEdit
+
+    **PUT /site-replication/resync/op?operation=\{op\}** — SiteReplicationResyncOp
+
+    Manage active-active replication between MinIO sites.
+
+    ```bash
+    mc admin replicate add alias1/ alias2/ alias3/
+    mc admin replicate info alias/
+    mc admin replicate status alias/
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## KMS operations
+
+<AccordionGroup>
+  <Accordion title="KMS APIs">
+    **POST /kms/status** — KMSStatusHandler
+
+    **POST /kms/key/create?key-id=\{id\}** — KMSCreateKeyHandler
+
+    **GET /kms/key/status** — KMSKeyStatusHandler
+
+    Create and inspect KMS keys used for server-side encryption.
+  </Accordion>
+</AccordionGroup>
+
+## Configuration
+
+<AccordionGroup>
+  <Accordion title="Config KV operations">
+    **GET /get-config-kv?key=\{key\}** — GetConfigKVHandler
+
+    **PUT /set-config-kv** — SetConfigKVHandler
+
+    **DELETE /del-config-kv** — DelConfigKVHandler
+
+    **GET /help-config-kv?subSys=\{sys\}&key=\{key\}** — HelpConfigKVHandler
+
+    Read, write, and delete individual configuration key-value pairs.
+
+    ```bash
+    mc admin config get alias/ api
+    mc admin config set alias/ api requests_max=100
+    mc admin config reset alias/ api
+    ```
+  </Accordion>
+
+  <Accordion title="Config history">
+    **GET /list-config-history-kv?count=\{n\}** — ListConfigHistoryKVHandler
+
+    **DELETE /clear-config-history-kv?restoreId=\{id\}** — ClearConfigHistoryKVHandler
+
+    **PUT /restore-config-history-kv?restoreId=\{id\}** — RestoreConfigHistoryKVHandler
+
+    View and restore previous configuration states.
+  </Accordion>
+
+  <Accordion title="Full config export/import">
+    **GET /config** — GetConfigHandler
+
+    **PUT /config** — SetConfigHandler
+
+    Export or import the full server configuration as a single document.
+  </Accordion>
+</AccordionGroup>
+
+## Diagnostics and profiling
+
+<AccordionGroup>
+  <Accordion title="Speed tests">
+    **POST /speedtest/object** — ObjectSpeedTestHandler
+
+    **POST /speedtest/drive** — DriveSpeedtestHandler
+
+    **POST /speedtest/net** — NetperfHandler
+
+    **POST /speedtest/site** — SitePerfHandler
+
+    Run performance benchmarks against objects, drives, or network links.
+
+    ```bash
+    mc support perf object alias/
+    mc support perf drive alias/
+    mc support perf net alias/
+    ```
+  </Accordion>
+
+  <Accordion title="Profiling">
+    **POST /profile** — ProfileHandler
+
+    **POST /profiling/start?profilerType=\{type\}** — StartProfilingHandler (deprecated)
+
+    **GET /profiling/download** — DownloadProfilingHandler (deprecated)
+
+    Collect CPU, memory, goroutine, and block profiling data.
+  </Accordion>
+
+  <Accordion title="Locks">
+    **GET /top/locks** — TopLocksHandler (distributed erasure only)
+
+    **POST /force-unlock?paths=\{paths\}** — ForceUnlockHandler (distributed erasure only)
+
+    View the top active locks and force-release stuck locks.
+  </Accordion>
+</AccordionGroup>

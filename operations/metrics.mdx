@@ -1,0 +1,229 @@
+---
+title: "Metrics and observability"
+description: "Collect MinIO metrics with Prometheus for cluster observability"
+---
+
+MinIO exports Prometheus-compatible metrics from a set of endpoints under `/minio/v2/metrics/`. Metrics cover S3 API request rates and latency, drive health, cluster capacity, erasure set status, replication throughput, IAM sync, ILM activity, and more.
+
+The v3 metrics API (under `/minio/metrics/v3`) provides a more granular, per-collector path structure that allows scraping individual metric categories independently.
+
+## Metrics endpoints
+
+### v2 endpoints (current stable)
+
+| Endpoint | Scope | Description |
+|---|---|---|
+| `/minio/v2/metrics/cluster` | Cluster-wide | Aggregate metrics scraped from any single node |
+| `/minio/v2/metrics/bucket` | Per-bucket | Bucket-level traffic, usage, and replication metrics |
+| `/minio/v2/metrics/node` | Per-node | Node-level Go runtime and process metrics |
+| `/minio/v2/metrics/resource` | Per-node | Drive I/O, CPU, memory, and network interface metrics |
+
+<Note>
+The `/minio/prometheus/metrics` endpoint is deprecated. Use the v2 endpoints above.
+</Note>
+
+### v3 collector paths
+
+The v3 API exposes metrics at granular sub-paths under `/minio/metrics/v3`. Each path maps to a specific collector:
+
+<AccordionGroup>
+  <Accordion title="API and request metrics">
+    | Path | Description |
+    |---|---|
+    | `/minio/metrics/v3/api/requests` | S3 request counts, errors, in-flight requests, TTFB distribution, and traffic bytes |
+    | `/minio/metrics/v3/bucket/api` | Per-bucket S3 request counts, errors, in-flight, and TTFB distribution |
+    | `/minio/metrics/v3/bucket/replication` | Per-bucket replication bytes, counts, latency, and proxied request stats |
+  </Accordion>
+  <Accordion title="System metrics">
+    | Path | Description |
+    |---|---|
+    | `/minio/metrics/v3/system/drive` | Drive usage, inodes, I/O errors, latency, iostat data, health, and online/offline counts |
+    | `/minio/metrics/v3/system/memory` | Node memory: total, used, free, available, buffers, cache, shared |
+    | `/minio/metrics/v3/system/cpu` | CPU time breakdown: user, system, idle, iowait, nice, steal, load |
+    | `/minio/metrics/v3/system/process` | Process file descriptors, CPU seconds, goroutines, I/O bytes, uptime, memory |
+    | `/minio/metrics/v3/system/network/internode` | Internode traffic bytes sent/received, dial errors, average dial time |
+  </Accordion>
+  <Accordion title="Cluster metrics">
+    | Path | Description |
+    |---|---|
+    | `/minio/metrics/v3/cluster/health` | Drive and node online/offline counts, raw and usable capacity |
+    | `/minio/metrics/v3/cluster/usage/objects` | Total objects, versions, delete markers, size distribution |
+    | `/minio/metrics/v3/cluster/usage/buckets` | Per-bucket usage, quota, object count, version count |
+    | `/minio/metrics/v3/cluster/erasure-set` | Erasure set health, read/write quorum, online and healing drive counts |
+    | `/minio/metrics/v3/cluster/iam` | IAM sync duration, failures, plugin authentication stats |
+    | `/minio/metrics/v3/cluster/config` | Configured standard and RRS parity |
+  </Accordion>
+  <Accordion title="Operational metrics">
+    | Path | Description |
+    |---|---|
+    | `/minio/metrics/v3/scanner` | Bucket and directory scan counts, objects and versions scanned, last activity |
+    | `/minio/metrics/v3/ilm` | ILM expiry and transition pending tasks, versions scanned |
+    | `/minio/metrics/v3/replication` | Cluster-wide replication worker counts, queue bytes/count, transfer rate |
+    | `/minio/metrics/v3/audit` | Audit message send failures, queue length, total messages |
+    | `/minio/metrics/v3/logger/webhook` | Logger webhook queue length, failed and total messages |
+    | `/minio/metrics/v3/notification` | Notification events sent, errors, skipped, and in-progress sends |
+    | `/minio/metrics/v3/debug/go` | Standard Go runtime metrics (goroutines, GC, memory) |
+  </Accordion>
+</AccordionGroup>
+
+## Authentication
+
+By default, Prometheus endpoints require JWT bearer token authentication. To generate a `scrape_configs` block with the correct token for an alias, use `mc`:
+
+```bash
+mc admin prometheus generate myminio cluster
+```
+
+This outputs a ready-to-use `scrape_configs` section:
+
+```yaml
+scrape_configs:
+- job_name: minio-job
+  bearer_token: <generated-token>
+  metrics_path: /minio/v2/metrics/cluster
+  scheme: http
+  static_configs:
+  - targets: ['localhost:9000']
+```
+
+To allow unauthenticated scraping, set:
+
+```bash
+export MINIO_PROMETHEUS_AUTH_TYPE="public"
+```
+
+## Setting up Prometheus
+
+<Steps>
+  <Step title="Generate scrape configuration">
+    Generate the Prometheus scrape config for each metric type you want to collect:
+
+    ```bash
+    mc admin prometheus generate myminio cluster
+    mc admin prometheus generate myminio bucket
+    mc admin prometheus generate myminio node
+    mc admin prometheus generate myminio resource
+    ```
+  </Step>
+  <Step title="Add scrape configs to prometheus.yml">
+    Paste all generated `scrape_configs` blocks into your `prometheus.yml`. A complete example collecting all four metric types:
+
+    ```yaml
+    scrape_configs:
+    - job_name: minio-job
+      bearer_token: <token>
+      metrics_path: /minio/v2/metrics/cluster
+      scheme: http
+      static_configs:
+      - targets: ['minio.example.com:9000']
+
+    - job_name: minio-job-bucket
+      bearer_token: <token>
+      metrics_path: /minio/v2/metrics/bucket
+      scheme: http
+      static_configs:
+      - targets: ['minio.example.com:9000']
+
+    - job_name: minio-job-node
+      bearer_token: <token>
+      metrics_path: /minio/v2/metrics/node
+      scheme: http
+      static_configs:
+      - targets: ['node1:9000','node2:9000','node3:9000','node4:9000']
+
+    - job_name: minio-job-resource
+      bearer_token: <token>
+      metrics_path: /minio/v2/metrics/resource
+      scheme: http
+      static_configs:
+      - targets: ['minio.example.com:9000']
+    ```
+
+    <Note>
+    The cluster and bucket endpoints can be scraped from any single node or a load balancer. The node and resource endpoints should target individual servers to get per-node breakdown.
+    </Note>
+  </Step>
+  <Step title="Start or reload Prometheus">
+    ```bash
+    ./prometheus --config.file=prometheus.yml
+    ```
+
+    The Prometheus dashboard is accessible at `http://localhost:9090` by default.
+  </Step>
+  <Step title="Connect Grafana">
+    Add Prometheus as a data source in Grafana, then import the MinIO Grafana dashboard from the MinIO GitHub repository under `docs/metrics/prometheus/grafana/`.
+  </Step>
+</Steps>
+
+## Key metrics reference
+
+### Cluster health
+
+| Metric | Description |
+|---|---|
+| `minio_cluster_nodes_online_total` | Total MinIO nodes currently online |
+| `minio_cluster_nodes_offline_total` | Total MinIO nodes currently offline |
+| `minio_cluster_drive_online_total` | Total drives online in the cluster |
+| `minio_cluster_drive_offline_total` | Total drives offline in the cluster |
+| `minio_cluster_health_status` | Current cluster health status |
+| `minio_cluster_write_quorum` | Maximum write quorum across all pools and sets |
+| `minio_cluster_health_erasure_set_status` | Current health status of each erasure set |
+
+### Capacity
+
+| Metric | Description |
+|---|---|
+| `minio_cluster_capacity_raw_total_bytes` | Total raw storage capacity online |
+| `minio_cluster_capacity_raw_free_bytes` | Free raw storage capacity online |
+| `minio_cluster_capacity_usable_total_bytes` | Total usable capacity (after erasure overhead) |
+| `minio_cluster_capacity_usable_free_bytes` | Free usable capacity |
+| `minio_cluster_usage_total_bytes` | Total bytes stored in the cluster |
+| `minio_cluster_usage_object_total` | Total number of objects |
+
+### S3 API requests
+
+| Metric | Description |
+|---|---|
+| `minio_s3_requests_total` | Total S3 requests |
+| `minio_s3_requests_errors_total` | Total S3 requests with 4xx or 5xx errors |
+| `minio_s3_requests_4xx_errors_total` | Total S3 requests with 4xx errors |
+| `minio_s3_requests_5xx_errors_total` | Total S3 requests with 5xx errors |
+| `minio_s3_requests_inflight_total` | S3 requests currently in flight |
+| `minio_s3_requests_waiting_total` | S3 requests in the waiting queue |
+| `minio_s3_requests_ttfb_seconds_distribution` | Time-to-first-byte distribution across API calls |
+| `minio_s3_traffic_sent_bytes` | Total bytes sent to clients |
+| `minio_s3_traffic_received_bytes` | Total bytes received from clients |
+
+### Drive health
+
+| Metric | Description |
+|---|---|
+| `minio_node_drive_free_bytes` | Free bytes on a drive |
+| `minio_node_drive_total_bytes` | Total bytes on a drive |
+| `minio_node_drive_used_bytes` | Used bytes on a drive |
+| `minio_node_drive_latency_us` | Average last-minute drive API latency in microseconds |
+| `minio_node_drive_errors_timeout` | Drive timeout errors since server start |
+| `minio_node_drive_errors_ioerror` | Drive I/O errors since server start |
+| `minio_node_drive_io_waiting` | I/O operations currently waiting on drive |
+
+### Replication
+
+| Metric | Description |
+|---|---|
+| `minio_cluster_replication_last_minute_failed_bytes` | Bytes that failed replication in the last full minute |
+| `minio_cluster_replication_last_minute_failed_count` | Objects that failed replication in the last full minute |
+| `minio_cluster_replication_sent_bytes` | Total bytes replicated to the target cluster |
+| `minio_node_replication_current_transfer_rate` | Current replication transfer rate in bytes/sec |
+| `minio_node_replication_current_active_workers` | Active replication workers |
+| `minio_node_replication_recent_backlog_count` | Objects in replication backlog in the last 5 minutes |
+
+### Healing and scanner
+
+| Metric | Description |
+|---|---|
+| `minio_heal_objects_heal_total` | Objects healed in current self-healing run |
+| `minio_heal_objects_errors_total` | Objects for which healing failed |
+| `minio_heal_objects_total` | Objects scanned in current self-healing run |
+| `minio_heal_time_last_activity_nano_seconds` | Time since last self-healing activity |
+| `minio_node_scanner_bucket_scans_finished` | Total bucket scans completed since server start |
+| `minio_node_scanner_objects_scanned` | Total unique objects scanned since server start |

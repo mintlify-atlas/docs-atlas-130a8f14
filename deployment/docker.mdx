@@ -1,0 +1,150 @@
+---
+title: "Docker deployment"
+description: "Run MinIO in a Docker container"
+---
+
+MinIO provides a `Dockerfile` in the repository root that you can use to build a custom container image. The MinIO community edition is source-only, so you must build the binary before building the image.
+
+## Prerequisites
+
+- Docker installed and running
+- Go 1.24 or later (to build the MinIO binary)
+- The MinIO source repository cloned locally
+
+## Build and run
+
+<Steps>
+  <Step title="Build the MinIO binary">
+    Before building the Docker image, compile the `minio` binary and place it in the project root.
+
+    ```sh
+    go install github.com/minio/minio@latest
+    ```
+
+    Or cross-compile for a specific target platform:
+
+    ```sh
+    env GOOS=linux GOARCH=amd64 go build
+    ```
+
+    Confirm the binary exists in the project root before proceeding.
+  </Step>
+
+  <Step title="Build the Docker image">
+    Run the following command from the project root to build the image using the default `Dockerfile`:
+
+    ```sh
+    docker build -t myminio:minio .
+    ```
+
+    Confirm the image was created:
+
+    ```sh
+    docker image ls
+    ```
+  </Step>
+
+  <Step title="Run the container">
+    Start MinIO in a container, publishing both the S3 API port and the console port:
+
+    ```sh
+    docker run -p 9000:9000 -p 9001:9001 myminio:minio server /tmp/minio --console-address :9001
+    ```
+
+    Access the web console at `http://127.0.0.1:9001`. The default credentials are `minioadmin:minioadmin`.
+
+    <Note>
+      The `/tmp/minio` path inside the container is ephemeral. Data is lost when the container stops. Use a volume mount for persistent storage — see the next step.
+    </Note>
+  </Step>
+
+  <Step title="Run with persistent storage">
+    Mount a host directory into the container to persist data across restarts:
+
+    ```sh
+    docker run \
+      -p 9000:9000 \
+      -p 9001:9001 \
+      -v /mnt/data:/data \
+      -e MINIO_ROOT_USER=your-access-key \
+      -e MINIO_ROOT_PASSWORD=your-secret-key \
+      myminio:minio server /data --console-address :9001
+    ```
+
+    Replace `/mnt/data` with the path on your host where you want MinIO to store objects.
+  </Step>
+</Steps>
+
+## Environment variables
+
+Pass credentials and configuration to the container with `-e` flags or a `.env` file.
+
+| Variable | Description | Default |
+|---|---|---|
+| `MINIO_ROOT_USER` | Root user access key | `minioadmin` |
+| `MINIO_ROOT_PASSWORD` | Root user secret key | `minioadmin` |
+| `MINIO_DOMAIN` | Enables bucket DNS-style access | — |
+| `MINIO_USERNAME` | Run as this OS user (deprecated) | — |
+| `MINIO_GROUPNAME` | Run as this OS group (deprecated) | — |
+
+## Docker Compose example
+
+The following `docker-compose.yml` runs MinIO with four named volumes to simulate a multi-drive erasure-coded setup:
+
+```yaml
+services:
+  minio:
+    image: myminio:minio
+    command: server /data{1...4} --console-address :9001
+    environment:
+      MINIO_ROOT_USER: your-access-key
+      MINIO_ROOT_PASSWORD: your-secret-key
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - data1:/data1
+      - data2:/data2
+      - data3:/data3
+      - data4:/data4
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  data1:
+  data2:
+  data3:
+  data4:
+```
+
+Start the stack:
+
+```sh
+docker compose up -d
+```
+
+## Dockerfile reference
+
+The `Dockerfile` in the repository root copies a pre-built `minio` binary and the entrypoint script into the base image:
+
+```dockerfile
+FROM minio/minio:latest
+
+COPY ./minio-${TARGETARCH}.${RELEASE} /usr/bin/minio
+COPY dockerscripts/docker-entrypoint.sh /usr/bin/docker-entrypoint.sh
+
+ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]
+
+VOLUME ["/data"]
+
+CMD ["minio"]
+```
+
+You can customize `dockerscripts/docker-entrypoint.sh` to change the container startup behavior.
+
+<Warning>
+  The `MINIO_USERNAME` and `MINIO_GROUPNAME` variables in the entrypoint script are deprecated and unsupported. Avoid relying on them in new deployments.
+</Warning>

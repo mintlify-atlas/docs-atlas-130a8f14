@@ -1,0 +1,164 @@
+---
+title: "Distributed deployment"
+description: "Deploy MinIO across multiple nodes for high availability"
+---
+
+Distributed MinIO pools multiple drives across multiple nodes into a single object storage deployment. It provides high availability and data protection through erasure coding — data remains accessible as long as half or more of the drives are online.
+
+## How it works
+
+MinIO uses [Reed-Solomon](https://github.com/klauspost/reedsolomon) erasure coding. Drives are grouped into erasure sets of 2 to 16 drives each. Every object is written to exactly one erasure set and spread across its drives. The erasure set size is chosen automatically based on the total number of drives.
+
+For example, a 16-node cluster with 200 drives per node can tolerate up to 4 offline nodes (around 800 drives) while continuing to serve reads and writes.
+
+<Note>
+  MinIO follows a strict **read-after-write** and **list-after-write** consistency model. Use disk filesystems such as `xfs`, `zfs`, or `btrfs`. Avoid `ext4`, which does not honor POSIX `O_DIRECT`/`fdatasync` semantics. NFS is not recommended; if you must use it, prefer NFSv4 over NFSv3.
+</Note>
+
+## Prerequisites
+
+- MinIO installed on every participating node
+- Sequential or resolvable hostnames for all nodes (e.g., `minio1.example.com` through `minio4.example.com`)
+- Fresh, empty directories dedicated to MinIO on each node
+- All nodes running the same operating system with the same number of drives
+- All nodes within 15 minutes of each other in system time (NTP recommended)
+- Same `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` set on every node
+
+## Deploy a distributed cluster
+
+<Steps>
+  <Step title="Set root credentials on all nodes">
+    Run the following on **every node** before starting MinIO. All nodes must share the same credentials to connect and trust each other.
+
+    ```sh
+    export MINIO_ROOT_USER=your-access-key
+    export MINIO_ROOT_PASSWORD=your-secret-key
+    ```
+
+    <Warning>
+      If credentials differ between nodes, the cluster will not form. Set these variables consistently across all hosts before proceeding.
+    </Warning>
+  </Step>
+
+  <Step title="Start MinIO on every node">
+    Run the same command on all participating nodes. MinIO uses the ellipsis notation to expand the hostname and drive ranges.
+
+    ```sh
+    minio server https://minio{1...4}.example.com/data{1...4}
+    ```
+
+    This starts a 4-node cluster with 4 drives per node (16 drives total). MinIO automatically selects an erasure set size based on the GCD of acceptable values (4–16).
+
+    <Tip>
+      Always use three dots `{1...4}` in the ellipsis notation. Using two dots `{1..4}` causes the shell to expand the expression before it reaches MinIO, breaking erasure coding distribution.
+    </Tip>
+
+    MinIO expands the above command into 16 drive endpoints, interleaving hosts to maximize availability:
+
+    ```
+    https://minio1.example.com/data1
+    https://minio2.example.com/data1
+    https://minio3.example.com/data1
+    https://minio4.example.com/data1
+    https://minio1.example.com/data2
+    ...
+    ```
+  </Step>
+
+  <Step title="Confirm startup on all nodes">
+    MinIO waits for a quorum of nodes before becoming ready. All nodes must be started before the cluster begins serving requests. Check the server output on each node for a successful startup message.
+
+    Once all nodes are up, the cluster is accessible at:
+
+    | Interface | URL |
+    |---|---|
+    | S3 API | `https://minio1.example.com:9000` |
+    | Web Console | Bound to the `--console-address` port |
+  </Step>
+
+  <Step title="Verify the cluster">
+    Use the MinIO Client `mc` to confirm the cluster is healthy:
+
+    ```sh
+    mc alias set mycluster https://minio1.example.com:9000 your-access-key your-secret-key
+    mc admin info mycluster
+    ```
+  </Step>
+</Steps>
+
+## Environment variables
+
+| Variable | Description | Required |
+|---|---|---|
+| `MINIO_ROOT_USER` | Root user access key | Yes |
+| `MINIO_ROOT_PASSWORD` | Root user secret key | Yes |
+| `MINIO_DOMAIN` | Enables bucket DNS-style access | Recommended |
+
+## YAML configuration (alternative)
+
+For environments where sequential hostnames are not available, you can provide the server topology via a YAML configuration file instead of command-line arguments.
+
+```sh
+minio server --config config.yaml
+```
+
+Example `config.yaml`:
+
+```yaml
+version: v2
+address: ":9000"
+rootUser: "minioadmin"
+rootPassword: "minioadmin"
+console-address: ":9001"
+certs-dir: "/home/user/.minio/certs/"
+pools:
+  - args:
+      - "https://server-example-pool1:9000/mnt/disk{1...4}/"
+      - "https://server{1...2}-pool1:9000/mnt/disk{1...4}/"
+      - "https://server3-pool1:9000/mnt/disk{1...4}/"
+      - "https://server4-pool1:9000/mnt/disk{1...4}/"
+```
+
+<Note>
+  `version` and `pools` are mandatory fields. All other fields are optional. Environment variables take precedence over `config.yaml` values.
+</Note>
+
+## Expanding an existing cluster
+
+Add capacity by appending new server pools to the existing command. Each new pool is appended as an additional argument group:
+
+```sh
+export MINIO_ROOT_USER=your-access-key
+export MINIO_ROOT_PASSWORD=your-secret-key
+minio server http://host{1...4}/export{1...16} http://host{5...12}/export{1...16}
+```
+
+New objects are automatically placed in the pool with the most free space. Restarts are immediate and non-disruptive.
+
+<Warning>
+  Each pool you add must have the same erasure coding parity configuration as the original pool. Adding a pool with lower parity reduces the data redundancy guarantee for new objects placed in that pool.
+</Warning>
+
+## Erasure set sizing
+
+MinIO automatically selects the erasure set size using the greatest common divisor (GCD) of acceptable sizes (4–16). The table below shows minimum production-ready configurations.
+
+| Servers | Drives per node | Stripe size | Default parity | Read tolerance | Write tolerance |
+|---:|---:|---:|---:|---:|---:|
+| 4 | 2 | 8 | 4 | 2 | 1 |
+| 8 | 1 | 8 | 4 | 4 | 3 |
+| 8 | 2 | 16 | 4 | 2 | 2 |
+| 16 | 2 | 16 | 4 | 4 | 4 |
+
+For a full sizing reference, see the [erasure code sizing guide](https://github.com/minio/minio/blob/master/docs/distributed/SIZING.md).
+
+## Health checks
+
+MinIO exposes a health endpoint you can use for load balancer probes:
+
+```
+GET /minio/health/live    # Liveness check
+GET /minio/health/ready   # Readiness check (requires quorum)
+```
+
+Use the readiness endpoint on your load balancer to route traffic only to nodes that have achieved quorum.

@@ -1,0 +1,472 @@
+---
+title: "Bucket notifications"
+description: "Receive event notifications for object operations via webhooks, Kafka, NATS, Redis, and more"
+---
+
+MinIO bucket notifications let you monitor events on objects in a bucket and publish those events to external targets. When an object is created, accessed, or deleted, MinIO sends a structured JSON message to every configured notification target.
+
+## Supported event types
+
+<AccordionGroup>
+  <Accordion title="Object events">
+    | Event type | Description |
+    | :--- | :--- |
+    | `s3:ObjectCreated:Put` | Object uploaded via PUT |
+    | `s3:ObjectCreated:Post` | Object uploaded via POST |
+    | `s3:ObjectCreated:Copy` | Object created via copy |
+    | `s3:ObjectCreated:CompleteMultipartUpload` | Multipart upload completed |
+    | `s3:ObjectCreated:PutRetention` | Object retention set |
+    | `s3:ObjectCreated:PutLegalHold` | Legal hold placed on object |
+    | `s3:ObjectAccessed:Get` | Object downloaded |
+    | `s3:ObjectAccessed:Head` | Object metadata requested |
+    | `s3:ObjectAccessed:GetRetention` | Object retention read |
+    | `s3:ObjectAccessed:GetLegalHold` | Legal hold status read |
+    | `s3:ObjectRemoved:Delete` | Object deleted |
+    | `s3:ObjectRemoved:DeleteMarkerCreated` | Delete marker created on versioned object |
+  </Accordion>
+  <Accordion title="Replication events">
+    | Event type |
+    | :--- |
+    | `s3:Replication:OperationFailedReplication` |
+    | `s3:Replication:OperationCompletedReplication` |
+    | `s3:Replication:OperationNotTracked` |
+    | `s3:Replication:OperationMissedThreshold` |
+    | `s3:Replication:OperationReplicatedAfterThreshold` |
+  </Accordion>
+  <Accordion title="ILM transition events">
+    | Event type |
+    | :--- |
+    | `s3:ObjectRestore:Post` |
+    | `s3:ObjectRestore:Completed` |
+  </Accordion>
+  <Accordion title="Global events (ListenNotification API only)">
+    | Event type |
+    | :--- |
+    | `s3:BucketCreated` |
+    | `s3:BucketRemoved` |
+  </Accordion>
+</AccordionGroup>
+
+## Notification targets
+
+MinIO can publish events to the following targets:
+
+<CardGroup cols={3}>
+  <Card title="Webhook" icon="webhook" />
+  <Card title="Apache Kafka" icon="layer-group" />
+  <Card title="NATS" icon="bolt" />
+  <Card title="Redis" icon="database" />
+  <Card title="Elasticsearch" icon="magnifying-glass" />
+  <Card title="PostgreSQL" icon="table" />
+  <Card title="MySQL" icon="table" />
+  <Card title="AMQP (RabbitMQ)" icon="circle-nodes" />
+  <Card title="MQTT" icon="signal" />
+  <Card title="NSQ" icon="tower-broadcast" />
+</CardGroup>
+
+All targets support a persistent event store — if the target goes offline, MinIO saves events to disk and replays them when the connection is restored. Configure the store with `queue_dir` and `queue_limit` on any target.
+
+## Listing available notification subsystems
+
+```bash
+mc admin config get myminio | grep notify
+```
+
+```text
+notify_webhook        publish bucket notifications to webhook endpoints
+notify_amqp           publish bucket notifications to AMQP endpoints
+notify_kafka          publish bucket notifications to Kafka endpoints
+notify_mqtt           publish bucket notifications to MQTT endpoints
+notify_nats           publish bucket notifications to NATS endpoints
+notify_nsq            publish bucket notifications to NSQ endpoints
+notify_mysql          publish bucket notifications to MySQL databases
+notify_postgres       publish bucket notifications to Postgres databases
+notify_elasticsearch  publish bucket notifications to Elasticsearch endpoints
+notify_redis          publish bucket notifications to Redis datastores
+```
+
+## Configuring targets
+
+<Tabs>
+  <Tab title="Webhook">
+    ### Step 1: Configure the webhook endpoint
+
+    ```bash
+    mc admin config set myminio notify_webhook:1 \
+      endpoint="http://localhost:3000" \
+      queue_dir="/home/events" \
+      queue_limit="100000"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_WEBHOOK_ENABLE_1=on
+    export MINIO_NOTIFY_WEBHOOK_ENDPOINT_1=http://localhost:3000
+    export MINIO_NOTIFY_WEBHOOK_AUTH_TOKEN_1=mytoken        # optional
+    export MINIO_NOTIFY_WEBHOOK_QUEUE_DIR_1=/home/events
+    export MINIO_NOTIFY_WEBHOOK_QUEUE_LIMIT_1=100000
+    ```
+
+    Restart the MinIO server. The ARN `arn:minio:sqs::1:webhook` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:webhook --event put --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    ```text
+    arn:minio:sqs::1:webhook   s3:ObjectCreated:*   Filter: suffix=".jpg"
+    ```
+  </Tab>
+  <Tab title="Kafka">
+    ### Step 1: Configure the Kafka endpoint
+
+    ```bash
+    mc admin config set myminio notify_kafka:1 \
+      brokers="localhost:9092,localhost:9093" \
+      topic="bucketevents" \
+      queue_dir="/home/events" \
+      queue_limit="100000"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_KAFKA_ENABLE_1=on
+    export MINIO_NOTIFY_KAFKA_BROKERS_1=localhost:9092,localhost:9093
+    export MINIO_NOTIFY_KAFKA_TOPIC_1=bucketevents
+    export MINIO_NOTIFY_KAFKA_SASL_1=off
+    export MINIO_NOTIFY_KAFKA_TLS_1=off
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:kafka` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:kafka --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    ### Step 3: Verify with kafkacat
+
+    ```bash
+    kafkacat -C -b localhost:9092 -t bucketevents
+    ```
+
+    After uploading a file you will see a JSON notification:
+
+    ```json
+    {
+      "EventName": "s3:ObjectCreated:Put",
+      "Key": "images/myphoto.jpg",
+      "Records": [
+        {
+          "eventVersion": "2.0",
+          "eventSource": "minio:s3",
+          "eventTime": "2019-09-10T17:41:54Z",
+          "eventName": "s3:ObjectCreated:Put",
+          "s3": {
+            "bucket": { "name": "images" },
+            "object": { "key": "myphoto.jpg", "size": 6474 }
+          }
+        }
+      ]
+    }
+    ```
+  </Tab>
+  <Tab title="NATS">
+    ### Step 1: Configure the NATS endpoint
+
+    ```bash
+    mc admin config set myminio notify_nats:1 \
+      address="0.0.0.0:4222" \
+      subject="bucketevents" \
+      username="yourusername" \
+      password="yoursecret" \
+      queue_dir="/home/events" \
+      queue_limit="100000"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_NATS_ENABLE_1=on
+    export MINIO_NOTIFY_NATS_ADDRESS_1=0.0.0.0:4222
+    export MINIO_NOTIFY_NATS_SUBJECT_1=bucketevents
+    export MINIO_NOTIFY_NATS_USERNAME_1=yourusername
+    export MINIO_NOTIFY_NATS_PASSWORD_1=yoursecret
+    # NATS Streaming
+    export MINIO_NOTIFY_NATS_STREAMING_1=on
+    export MINIO_NOTIFY_NATS_STREAMING_CLUSTER_ID_1=test-cluster
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:nats` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:nats --suffix .jpg
+    mc event list myminio/images
+    ```
+  </Tab>
+  <Tab title="Redis">
+    ### Step 1: Configure the Redis endpoint
+
+    MinIO supports two formats for Redis:
+    - **namespace** — keeps a hash where each key is `bucketName/objectName` and the value is the event JSON. Entries are updated or deleted as objects change.
+    - **access** — appends every event to a list using `RPUSH`. No entries are ever deleted.
+
+    ```bash
+    mc admin config set myminio notify_redis:1 \
+      address="127.0.0.1:6379" \
+      key="bucketevents" \
+      format="namespace" \
+      password="yoursecret"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_REDIS_ENABLE_1=on
+    export MINIO_NOTIFY_REDIS_ADDRESS_1=127.0.0.1:6379
+    export MINIO_NOTIFY_REDIS_KEY_1=bucketevents
+    export MINIO_NOTIFY_REDIS_FORMAT_1=namespace
+    export MINIO_NOTIFY_REDIS_PASSWORD_1=yoursecret
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:redis` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:redis --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    ```text
+    arn:minio:sqs::1:redis s3:ObjectCreated:*,s3:ObjectRemoved:* Filter: suffix=".jpg"
+    ```
+  </Tab>
+  <Tab title="Elasticsearch">
+    ### Step 1: Configure the Elasticsearch endpoint
+
+    MinIO supports two formats for Elasticsearch:
+    - **namespace** — creates or updates a document whose `_id` is `bucketName/objectName`. Documents are deleted when objects are deleted.
+    - **access** — appends a new document for every event. Documents are never deleted.
+
+    ```bash
+    mc admin config set myminio notify_elasticsearch:1 \
+      url="http://127.0.0.1:9200" \
+      index="minio_events" \
+      format="namespace"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_ELASTICSEARCH_ENABLE_1=on
+    export MINIO_NOTIFY_ELASTICSEARCH_URL_1=http://127.0.0.1:9200
+    export MINIO_NOTIFY_ELASTICSEARCH_INDEX_1=minio_events
+    export MINIO_NOTIFY_ELASTICSEARCH_FORMAT_1=namespace
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:elasticsearch` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:elasticsearch --suffix .jpg
+    ```
+
+    <Note>MinIO requires Elasticsearch 5.x or later. The index is auto-created if it does not exist.</Note>
+  </Tab>
+  <Tab title="PostgreSQL">
+    ### Step 1: Configure the PostgreSQL endpoint
+
+    ```bash
+    mc admin config set myminio notify_postgres:1 \
+      connection_string="host=localhost port=5432 dbname=minio_events user=postgres password=password sslmode=disable" \
+      table="bucketevents" \
+      format="namespace"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_POSTGRES_ENABLE_1=on
+    export MINIO_NOTIFY_POSTGRES_CONNECTION_STRING_1="host=localhost port=5432 dbname=minio_events user=postgres password=password sslmode=disable"
+    export MINIO_NOTIFY_POSTGRES_TABLE_1=bucketevents
+    export MINIO_NOTIFY_POSTGRES_FORMAT_1=namespace
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:postgresql` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:postgresql --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    <Note>MinIO requires PostgreSQL 9.5 or later. The table is auto-created if it does not exist.</Note>
+  </Tab>
+  <Tab title="MySQL">
+    ### Step 1: Configure the MySQL endpoint
+
+    ```bash
+    mc admin config set myminio notify_mysql:myinstance \
+      dsn_string="root:password@tcp(172.17.0.1:3306)/miniodb" \
+      table="minio_images" \
+      format="namespace"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_MYSQL_ENABLE_MYINSTANCE=on
+    export MINIO_NOTIFY_MYSQL_DSN_STRING_MYINSTANCE="root:password@tcp(172.17.0.1:3306)/miniodb"
+    export MINIO_NOTIFY_MYSQL_TABLE_MYINSTANCE=minio_images
+    export MINIO_NOTIFY_MYSQL_FORMAT_MYINSTANCE=namespace
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::myinstance:mysql` appears in the startup log.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::myinstance:mysql --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    <Note>MinIO requires MySQL 5.7.8 or later for JSON column support.</Note>
+  </Tab>
+  <Tab title="AMQP">
+    ### Step 1: Configure the AMQP endpoint
+
+    ```bash
+    mc admin config set myminio notify_amqp:1 \
+      url="amqp://myuser:mypassword@localhost:5672" \
+      exchange="bucketevents" \
+      exchange_type="fanout" \
+      routing_key="bucketlogs" \
+      mandatory="off" \
+      durable="off" \
+      delivery_mode="0"
+    ```
+
+    **Environment variables**
+
+    ```bash
+    export MINIO_NOTIFY_AMQP_ENABLE_1=on
+    export MINIO_NOTIFY_AMQP_URL_1=amqp://myuser:mypassword@localhost:5672
+    export MINIO_NOTIFY_AMQP_EXCHANGE_1=bucketevents
+    export MINIO_NOTIFY_AMQP_EXCHANGE_TYPE_1=fanout
+    export MINIO_NOTIFY_AMQP_ROUTING_KEY_1=bucketlogs
+    ```
+
+    Restart MinIO. The ARN `arn:minio:sqs::1:amqp` appears in the startup log.
+
+    MinIO also sets `minio-bucket` and `minio-event` headers on published messages, which lets a `headers`-type exchange route notifications to specific queues.
+
+    ### Step 2: Add a bucket event
+
+    ```bash
+    mc mb myminio/images
+    mc event add myminio/images arn:minio:sqs::1:amqp --suffix .jpg
+    mc event list myminio/images
+    ```
+
+    ```text
+    arn:minio:sqs::1:amqp s3:ObjectCreated:*,s3:ObjectRemoved:* Filter: suffix=".jpg"
+    ```
+  </Tab>
+</Tabs>
+
+## Filtering events by prefix and suffix
+
+Use `--prefix` and `--suffix` flags with `mc event add` to narrow which objects trigger a notification.
+
+```bash
+# Notify on all .jpg files in the photos/ prefix
+mc event add myminio/images arn:minio:sqs::1:webhook \
+  --prefix "photos/" \
+  --suffix ".jpg"
+
+# Notify only on object creation (not deletion)
+mc event add myminio/images arn:minio:sqs::1:webhook \
+  --event put \
+  --suffix ".log"
+```
+
+## Managing events
+
+```bash
+# List all configured events on a bucket
+mc event list myminio/images
+
+# Remove a specific event ARN from a bucket
+mc event remove myminio/images arn:minio:sqs::1:webhook
+
+# Remove all events from a bucket
+mc event remove myminio/images --force
+```
+
+## Notification message structure
+
+MinIO follows the [AWS S3 notification content structure](https://docs.aws.amazon.com/AmazonS3/latest/dev/notification-content-structure.html). A sample PUT event payload looks like:
+
+```json
+{
+  "EventName": "s3:ObjectCreated:Put",
+  "Key": "images/myphoto.jpg",
+  "Records": [
+    {
+      "eventVersion": "2.0",
+      "eventSource": "minio:s3",
+      "awsRegion": "",
+      "eventTime": "2019-09-10T17:41:54Z",
+      "eventName": "s3:ObjectCreated:Put",
+      "userIdentity": {
+        "principalId": "AKIAIOSFODNN7EXAMPLE"
+      },
+      "requestParameters": {
+        "sourceIPAddress": "192.168.56.192"
+      },
+      "responseElements": {
+        "x-amz-request-id": "15C3249451E12784",
+        "x-minio-origin-endpoint": "http://192.168.97.83:9000"
+      },
+      "s3": {
+        "s3SchemaVersion": "1.0",
+        "bucket": {
+          "name": "images",
+          "arn": "arn:aws:s3:::images"
+        },
+        "object": {
+          "key": "myphoto.jpg",
+          "size": 6474,
+          "eTag": "430f89010c77aa34fc8760696da62d08-1",
+          "contentType": "image/jpeg",
+          "versionId": "1",
+          "sequencer": "15C32494527B46C5"
+        }
+      }
+    }
+  ]
+}
+```
+
+<Note>
+Multiple notification targets can share the same name identifier by appending `:name` to the subsystem key (for example, `notify_webhook:production` and `notify_webhook:staging`). Each named instance has its own ARN.
+</Note>

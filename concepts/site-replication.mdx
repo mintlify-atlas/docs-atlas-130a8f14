@@ -1,0 +1,179 @@
+---
+title: "Site replication"
+description: "Synchronize multiple MinIO deployments for geo-redundant storage"
+---
+
+Site replication allows multiple independent MinIO sites (clusters) to be configured as replicas of each other. Unlike [bucket replication](/concepts/replication), which operates at the bucket level, site replication synchronizes the **entire MinIO deployment** — including all buckets, objects, IAM configuration, and bucket policies — across all peer sites.
+
+## Site replication vs. bucket replication
+
+| | Bucket replication | Site replication |
+|---|---|---|
+| **Scope** | Individual buckets | Entire deployment |
+| **IAM sync** | No | Yes — users, groups, policies |
+| **Bucket policies** | No | Yes |
+| **Object locking config** | No | Yes |
+| **Bucket encryption** | No | Yes |
+| **ILM (lifecycle) config** | No | Not replicated (by design) |
+| **Bucket notifications** | No | Not replicated (by design) |
+| **Setup complexity** | Per-bucket | Single command across all sites |
+
+## What gets replicated
+
+When site replication is enabled, the following changes are automatically synchronized to all peer sites:
+
+<CardGroup cols={2}>
+  <Card title="Buckets and objects" icon="bucket">
+    Creation and deletion of buckets and objects, replicated to all peer sites in real time.
+  </Card>
+  <Card title="IAM configuration" icon="users">
+    Users, groups, IAM policies, and policy mappings. STS credentials are also synchronized.
+  </Card>
+  <Card title="Service accounts" icon="key">
+    Creation and deletion of service accounts (except those owned by the root user).
+  </Card>
+  <Card title="Bucket configuration" icon="gear">
+    Bucket policies, bucket tags, object lock and retention configuration, and bucket encryption settings.
+  </Card>
+</CardGroup>
+
+### What is intentionally not replicated
+
+- **Bucket notification configuration** — notification targets differ per site
+- **Bucket lifecycle (ILM) configuration** — tiering tiers and expiry policies are site-specific
+
+<Note>
+  Bucket versioning is automatically enabled for all new and existing buckets on all replicated sites when site replication is configured.
+</Note>
+
+## Prerequisites
+
+Before configuring site replication:
+
+<Steps>
+  <Step title="Single site with data">
+    Initially, **only one** of the sites may have existing data. After site replication is successfully configured, that data is replicated to the other (initially empty) sites. After initial sync, objects may be written to any site.
+  </Step>
+
+  <Step title="Shared external IDP">
+    All sites must use the **same external Identity Provider (IDP)** if any external IDP is configured. This ensures that user identities and tokens are valid across all sites.
+  </Step>
+
+  <Step title="Shared KMS (if using encryption)">
+    For SSE-S3 or SSE-KMS encryption, all sites must have access to a **shared KMS deployment**. This can be a central KES server, or multiple KES servers per site all connected to the same central KMS (e.g., HashiCorp Vault).
+  </Step>
+
+  <Step title="Understand removal limitations">
+    Removing a site from a set of replicated sites is **not supported** once site replication is configured. Plan your site topology carefully before enabling.
+  </Step>
+</Steps>
+
+## Setting up site replication
+
+<Steps>
+  <Step title="Configure mc aliases for each site">
+    Create an `mc` alias for every site participating in replication. You can use either form:
+
+    ```sh
+    mc alias set minio1 https://minio1.example.com:9000 adminuser adminpassword
+    mc alias set minio2 https://minio2.example.com:9000 adminuser adminpassword
+    mc alias set minio3 https://minio3.example.com:9000 adminuser adminpassword
+    ```
+
+    Or use environment variables:
+
+    ```sh
+    export MC_HOST_minio1=https://adminuser:adminpassword@minio1.example.com
+    export MC_HOST_minio2=https://adminuser:adminpassword@minio2.example.com
+    export MC_HOST_minio3=https://adminuser:adminpassword@minio3.example.com
+    ```
+  </Step>
+
+  <Step title="Enable site replication">
+    Add all sites to the replication group with a single command:
+
+    ```sh
+    mc admin replicate add minio1 minio2 minio3
+    ```
+
+    This command designates `minio1`, `minio2`, and `minio3` as peer sites. Any data on the first site listed is replicated to the others.
+  </Step>
+
+  <Step title="Verify the configuration">
+    Query site replication configuration and status from any peer:
+
+    ```sh
+    mc admin replicate info minio1
+    ```
+
+    Check replication status across all sites:
+
+    ```sh
+    mc admin replicate status minio1
+    ```
+  </Step>
+</Steps>
+
+## Adding a new site to an existing group
+
+You can add a new empty site to an already-configured replication group:
+
+```sh
+mc admin replicate add minio1 minio2 minio3
+```
+
+Running `mc admin replicate add` again with an additional site will add the new site and begin replicating existing data to it. The new site must be initially empty.
+
+## Resyncing sites
+
+If you need to re-synchronize data between two sites (for example, after removing and re-adding site replication), use:
+
+```sh
+mc admin replicate resync start minio1 minio2
+```
+
+Monitor resync progress:
+
+```sh
+mc admin replicate status minio1
+```
+
+## STS credentials and root accounts
+
+Site replication no longer requires root credentials to be identical across peer sites. STS tokens are signed using the site replicator service account credentials, which allows each site to manage its root account independently — and eventually disable root access entirely.
+
+<Warning>
+  STS tokens generated before upgrading to the version that introduced this change will become invalid. Regenerate STS tokens after upgrading. Similarly, if site replication is removed, all STS tokens become invalid and must be regenerated.
+</Warning>
+
+## Testing site replication
+
+To verify that objects and configuration changes replicate correctly:
+
+```sh
+# Create a bucket on one site
+mc mb minio1/testbucket
+
+# Verify it appears on the other sites
+mc stat --no-list minio2/testbucket
+mc stat --no-list minio3/testbucket
+
+# Upload an object to site 2
+mc cp ./myfile.csv minio2/testbucket/
+
+# Verify it replicates to sites 1 and 3
+mc stat --no-list minio1/testbucket/myfile.csv
+mc stat --no-list minio3/testbucket/myfile.csv
+```
+
+## Removing site replication
+
+To remove all site replication configuration:
+
+```sh
+mc admin replicate rm --all --force minio1
+```
+
+<Warning>
+  After removing site replication, all STS tokens across all formerly-replicated sites become invalid. Applications using STS-based authentication must regenerate their tokens.
+</Warning>

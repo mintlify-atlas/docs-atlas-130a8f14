@@ -1,0 +1,195 @@
+---
+title: "Batch jobs"
+description: "Run large-scale data operations with MinIO batch jobs"
+---
+
+MinIO batch jobs let you perform management operations across large numbers of objects using a declarative YAML specification. Submit a job description and MinIO handles parallelism, retries, and progress reporting.
+
+## Job types
+
+<CardGroup cols={2}>
+  <Card title="Replicate" icon="copy">
+    Copy objects between buckets on local or remote MinIO sites with fine-grained filtering.
+  </Card>
+  <Card title="Expire" icon="clock">
+    Expire objects matching specific criteria without waiting for ILM policy cycles.
+  </Card>
+  <Card title="Key rotation" icon="key">
+    Rotate SSE-S3 or SSE-KMS encryption keys for objects across a bucket.
+  </Card>
+</CardGroup>
+
+## Terminology
+
+**Job** — The basic unit of work. A self-describing YAML file that specifies what to do, which objects to act on, retry behavior, and where to send notifications. Submitting a job returns a job ID (JID).
+
+**Type** — The kind of operation the job performs. Each job performs a single type of operation across all matched objects.
+
+## Replication jobs
+
+Batch replication copies objects from a source bucket to a target bucket on the same or a different MinIO site. Unlike continuous bucket replication, a batch job is a one-time operation that completes and exits.
+
+### Job YAML structure
+
+```yaml
+replicate:
+  apiVersion: v1
+
+  # Source of the objects to be replicated
+  source:
+    type: minio           # Only "minio" is supported
+    bucket: source-bucket
+    prefix: data/         # Optional: restrict to a prefix
+    # For remote source, uncomment and provide credentials:
+    # endpoint: https://minio.remote.example.com
+    # credentials:
+    #   accessKey: ACCESS-KEY
+    #   secretKey: SECRET-KEY
+    #   sessionToken: SESSION-TOKEN  # For rotating credentials
+
+  # Target where objects must be replicated
+  target:
+    type: minio
+    bucket: target-bucket
+    prefix: backup/       # Optional: write under a prefix
+    # For remote target, uncomment and provide credentials:
+    # endpoint: https://minio.backup.example.com
+    # credentials:
+    #   accessKey: ACCESS-KEY
+    #   secretKey: SECRET-KEY
+    #   sessionToken: SESSION-TOKEN
+
+  flags:
+    filter:
+      newerThan: "7d"       # Match objects newer than this (e.g. 7d10h31s)
+      olderThan: "30d"      # Match objects older than this
+      createdAfter: "2024-01-01T00:00:00Z"
+      createdBefore: "2024-06-01T00:00:00Z"
+
+      # Tag filtering — only supported when source is local
+      # tags:
+      #   - key: "tier"
+      #     value: "archive*"
+
+      # Metadata filtering — only supported for local MinIO source
+      # metadata:
+      #   - key: "content-type"
+      #     value: "image/*"
+
+    notify:
+      endpoint: "https://notify.example.com/batch"  # Receives job status events
+      token: "Bearer xxxxx"                          # Optional auth token
+
+    retry:
+      attempts: 10      # Number of retries before giving up
+      delay: "500ms"    # Minimum delay between retries
+```
+
+<Note>
+If the source is remote, the target must be `local` (and vice versa). Tag and metadata filters are only available when the source is a local MinIO instance.
+</Note>
+
+## Managing batch jobs with mc
+
+### Generate a job YAML template
+
+```bash
+mc batch generate myminio/ replicate
+```
+
+This prints a fully annotated template to stdout. Redirect it to a file and customize it:
+
+```bash
+mc batch generate myminio/ replicate > replicate.yaml
+```
+
+### Start a job
+
+```bash
+mc batch start myminio/ ./replicate.yaml
+```
+
+Output:
+
+```
+Successfully start 'replicate' job `E24HH4nNMcgY5taynaPfxu` on '2022-09-26 17:19:06.296974771 -0700 PDT'
+```
+
+The returned job ID is used to monitor and manage the running job.
+
+You can run multiple replication jobs simultaneously — there are no predefined concurrency limits.
+
+### List running jobs
+
+```bash
+# List all jobs
+mc batch list myminio/
+
+# Filter by type
+mc batch list myminio/ --type replicate
+```
+
+Output:
+
+```
+ID                      TYPE            USER            STARTED
+E24HH4nNMcgY5taynaPfxu  replicate       minioadmin      1 minute ago
+```
+
+### Monitor job progress
+
+```bash
+mc batch status myminio/ E24HH4nNMcgY5taynaPfxu
+```
+
+Output:
+
+```
+●∙∙
+Objects:        28766
+Versions:       28766
+Throughput:     3.0 MiB/s
+Transferred:    406 MiB
+Elapsed:        2m14.227222868s
+CurrObjName:    share/doc/xml-core/examples/foo.xmlcatalogs
+```
+
+The status command streams real-time progress updates until the job completes.
+
+### Inspect job definition
+
+To retrieve the YAML definition for a running or completed job:
+
+```bash
+mc batch describe myminio/ E24HH4nNMcgY5taynaPfxu
+```
+
+## Notifications
+
+Batch jobs support webhook notifications on completion or failure. Configure the `notify` block in your job YAML:
+
+```yaml
+flags:
+  notify:
+    endpoint: "https://webhook.example.com/batch-complete"
+    token: "Bearer <your-token>"
+```
+
+MinIO sends a POST request to the endpoint when the job completes or encounters a terminal failure.
+
+## Retries
+
+The `retry` block controls how many times the job retries failed objects before marking them as permanently failed:
+
+```yaml
+flags:
+  retry:
+    attempts: 10
+    delay: "500ms"
+```
+
+The `delay` is the minimum time between retry attempts. Retries use exponential backoff up to the configured delay.
+
+## Versioned objects
+
+Batch replication correctly preserves version ordering for versioned buckets. After decommissioning or migrating data, all versions of each object maintain their original order on the target.

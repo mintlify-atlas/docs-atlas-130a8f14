@@ -1,0 +1,205 @@
+---
+title: "Object versioning"
+description: "Track and manage multiple versions of objects stored in MinIO buckets"
+---
+
+MinIO versioning lets you keep multiple versions of an object in the same bucket. For example, you can store `spark.csv` at version `ede336f2` and `spark.csv` at version `fae684da` simultaneously. Versioning protects you from accidental overwrites and deletions, and enables retention policies for compliance.
+
+<Warning>
+  Versioning is only available in erasure-coded and distributed erasure-coded setups. It is not supported in single-drive (filesystem) mode.
+</Warning>
+
+## Versioning states
+
+Every MinIO bucket is in one of three versioning states:
+
+| State | Description |
+|---|---|
+| **Unversioned** | Default for all buckets. Objects are overwritten in place. |
+| **Enabled** | Every PUT creates a new version. Deletes create delete markers instead of permanently removing data. |
+| **Suspended** | Versioning is paused. New PUTs overwrite the `null` version. Existing versions are preserved. |
+
+Versioning state applies to all objects in the bucket. Once enabled, it cannot be fully disabled — only suspended.
+
+<Note>
+  Buckets created with object locking enabled have versioning turned on automatically and cannot be suspended.
+</Note>
+
+## How version IDs work
+
+MinIO generates version IDs using **DCE 1.1 v4 UUID** (random-data-based). These UUIDs are:
+
+- **128-bit random numbers** with a high likelihood of global uniqueness
+- **Locally generated** — no central registration authority required
+- **Immutable** — only MinIO generates version IDs; they cannot be edited
+
+Version IDs appear on every object version and are used to retrieve or permanently delete specific versions.
+
+## Object operations on versioned buckets
+
+### PUT: creating a new version
+
+When you PUT an object into a versioning-enabled bucket, the existing version is **not overwritten**. MinIO keeps the existing version intact and creates a new version with a new version ID.
+
+For example, uploading `spark.csv` into a bucket that already contains `spark.csv` (version `ede336f2`) results in:
+- The original version `ede336f2` is preserved
+- A new version `fae684da` is created and becomes the **current version**
+
+### GET: retrieving objects
+
+A plain GET request always returns the **latest (current) version** of an object.
+
+To retrieve a specific version, supply the version ID:
+
+```sh
+mc cp --version-id fae684da myminio/mybucket/spark.csv ./spark.csv
+```
+
+If the current version is a delete marker, a plain GET returns `404 The specified key does not exist`.
+
+### DELETE: delete markers
+
+When you DELETE an object **without specifying a version ID**, MinIO does not permanently remove any data. Instead, it creates a **delete marker** that becomes the new current version. All previous versions remain in the bucket.
+
+A GET request on an object whose current version is a delete marker returns `404`.
+
+<Note>
+  MinIO does not create duplicate delete markers. If an application performs repeated soft deletes on the same object, only a single delete marker is maintained.
+</Note>
+
+### Permanent delete
+
+To permanently delete a specific version, supply the version ID:
+
+```sh
+mc rm --version-id ede336f2 myminio/mybucket/spark.csv
+```
+
+Only users with the appropriate IAM permissions can permanently delete a version. Permanent deletes do not create delete markers.
+
+<Warning>
+  All versions, including delete markers, must be deleted before a bucket can be removed.
+</Warning>
+
+## Enabling versioning
+
+<Tabs>
+  <Tab title="mc CLI">
+    Enable versioning on a bucket:
+
+    ```sh
+    mc version enable myminio/mybucket
+    ```
+
+    Check the current versioning status:
+
+    ```sh
+    mc version info myminio/mybucket
+    ```
+
+    Suspend versioning:
+
+    ```sh
+    mc version suspend myminio/mybucket
+    ```
+  </Tab>
+  <Tab title="S3 API (XML)">
+    Send a `PutBucketVersioning` request with the following body to enable versioning:
+
+    ```xml
+    <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <Status>Enabled</Status>
+    </VersioningConfiguration>
+    ```
+
+    To suspend versioning:
+
+    ```xml
+    <VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+      <Status>Suspended</Status>
+    </VersioningConfiguration>
+    ```
+  </Tab>
+  <Tab title="Java SDK">
+    Enable versioning with the MinIO Java SDK:
+
+    ```java
+    import io.minio.EnableVersioningArgs;
+    import io.minio.MinioClient;
+
+    MinioClient minioClient = MinioClient.builder()
+        .endpoint("https://play.min.io")
+        .credentials("ACCESS-KEY", "SECRET-KEY")
+        .build();
+
+    minioClient.enableVersioning(
+        EnableVersioningArgs.builder().bucket("my-bucketname").build()
+    );
+    ```
+  </Tab>
+</Tabs>
+
+## Listing versions
+
+To list all versions of objects in a bucket including delete markers:
+
+```sh
+mc ls --versions myminio/mybucket
+```
+
+To list versions of a specific object:
+
+```sh
+mc ls --versions myminio/mybucket/spark.csv
+```
+
+## Suspended versioning
+
+When versioning is suspended:
+
+- New PUTs write to the `null` version ID, overwriting any existing `null` version
+- Existing versioned objects (non-null version IDs) are preserved and still accessible by version ID
+- DELETE without a version ID creates a delete marker with version ID `null`, or removes the `null` version if no other versions exist
+
+Suspending versioning is useful when you want to stop accumulating new versions while preserving the existing history.
+
+## MinIO versioning extensions
+
+### Excluded prefixes
+
+For workloads like Spark/Hadoop that write many temporary objects (e.g., under `_temporary/` or `__magic/` prefixes), you can exclude specific prefix patterns from versioning:
+
+```xml
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+  <ExcludedPrefixes>
+    <Prefix>*/_temporary</Prefix>
+  </ExcludedPrefixes>
+  <ExcludedPrefixes>
+    <Prefix>*/__magic</Prefix>
+  </ExcludedPrefixes>
+  <ExcludedPrefixes>
+    <Prefix>*/_staging</Prefix>
+  </ExcludedPrefixes>
+</VersioningConfiguration>
+```
+
+Objects matching these prefixes behave as though versioning is suspended — they will not accumulate versions and will not be replicated if bucket replication is configured. Up to 10 excluded prefix patterns are supported.
+
+### Idempotent directory objects
+
+Objects whose names end with `/` (directory objects) always have a single version ID of `null`. DELETE on a directory object removes it outright rather than creating a delete marker. This prevents namespace pollution for directory-heavy workloads.
+
+### Idempotent delete markers
+
+MinIO does not create duplicate delete markers. Repeated soft deletes on the same object result in exactly one delete marker, regardless of how many delete requests are issued.
+
+## Integration with lifecycle management
+
+Versioning integrates tightly with [object lifecycle management](/concepts/object-lifecycle). Common patterns:
+
+- **Expire noncurrent versions** — automatically delete versions older than N days
+- **Keep only the N most recent versions** — use `NewerNoncurrentVersions` to limit version accumulation
+- **Remove orphaned delete markers** — clean up delete markers that have no remaining versions
+
+See [object lifecycle management](/concepts/object-lifecycle) for configuration examples.

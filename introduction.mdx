@@ -1,0 +1,118 @@
+---
+title: "Introduction"
+description: "MinIO is a high-performance, S3-compatible object storage server designed for cloud-native workloads."
+---
+
+## What is MinIO?
+
+MinIO is a high-performance, S3-compatible object storage server released under the GNU AGPL v3.0 license. It is designed for speed and scalability, powering AI/ML, analytics, and data-intensive workloads with industry-leading performance.
+
+MinIO implements the full Amazon S3 API, making it a drop-in replacement for S3-based applications. You can use any S3-compatible tool, SDK, or library with MinIO without modification.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Deploy MinIO and start storing objects in minutes
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install MinIO from source or use Docker
+  </Card>
+  <Card title="Distributed Deployment" icon="server" href="/deployment/distributed">
+    Scale across multiple nodes and drives
+  </Card>
+  <Card title="S3 API Reference" icon="code" href="/reference/s3-api">
+    Explore the full S3-compatible API
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="S3-compatible API" icon="cloud">
+    Full Amazon S3 API compatibility — use any existing S3 tool, SDK, or integration without changes.
+  </Card>
+  <Card title="Erasure coding" icon="shield">
+    Reed-Solomon erasure coding protects data across drives. Survive loss of up to N/2 drives with full data recovery.
+  </Card>
+  <Card title="High performance" icon="bolt">
+    Optimized for NVMe, SSD, and HDDs. Delivers industry-leading throughput for read and write operations.
+  </Card>
+  <Card title="Multi-site replication" icon="arrows-repeat">
+    Synchronous and asynchronous replication across data centers for geo-redundancy.
+  </Card>
+  <Card title="Server-side encryption" icon="lock">
+    SSE-KMS, SSE-S3, and SSE-C encryption modes with external KMS integration support.
+  </Card>
+  <Card title="Identity & access management" icon="user-shield">
+    Built-in IAM with LDAP, OpenID Connect, and STS-based authentication.
+  </Card>
+  <Card title="Kubernetes native" icon="dharmachakra">
+    Helm charts and Kubernetes Operator for cloud-native deployments at scale.
+  </Card>
+  <Card title="Prometheus metrics" icon="chart-line">
+    Comprehensive Prometheus-compatible metrics for cluster health, performance, and usage.
+  </Card>
+</CardGroup>
+
+## Architecture overview
+
+MinIO is a single binary that acts as both the object storage server and the web-based console. In distributed mode, multiple MinIO instances form a cluster where data is striped using erasure coding across drives.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   Client Applications               │
+│          S3 SDKs, mc CLI, S3 browsers               │
+└─────────────┬────────────────────────┬──────────────┘
+              │   S3 API (port 9000)   │
+              ▼                        ▼
+┌─────────────────────────────────────────────────────┐
+│                  MinIO Server                       │
+│  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
+│  │ API Router   │  │ Admin API    │  │  Console  │ │
+│  │ (S3-compat.) │  │ (port 9000)  │  │ (port 9001│ │
+│  └──────┬───────┘  └──────────────┘  └───────────┘ │
+│         │                                           │
+│  ┌──────▼──────────────────────────────────────┐   │
+│  │           Erasure Coding Engine              │   │
+│  │     Reed-Solomon N/2 data + N/2 parity       │   │
+│  └──────┬──────────────────────────────────────┘   │
+│         │                                           │
+│  ┌──────▼────────────────────────────────────────┐ │
+│  │              Storage Layer (XL)               │ │
+│  │  /data1  /data2  /data3  /data4  ...  /dataN  │ │
+│  └────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────┘
+```
+
+## Deployment modes
+
+<Tabs>
+  <Tab title="Single node">
+    Run MinIO on a single machine with one or more drives. Suitable for development, testing, and small workloads.
+
+    ```bash
+    minio server /data
+    ```
+  </Tab>
+  <Tab title="Single node, multiple drives">
+    Run MinIO on a single machine with multiple drives for erasure coding protection.
+
+    ```bash
+    minio server /data{1...4}
+    ```
+  </Tab>
+  <Tab title="Distributed (multi-node)">
+    Run MinIO across multiple nodes, each with multiple drives. Provides the highest availability.
+
+    ```bash
+    minio server https://minio{1...4}.example.com/data{1...4}
+    ```
+  </Tab>
+</Tabs>
+
+## License
+
+MinIO is open source software licensed under the [GNU AGPLv3](https://github.com/minio/minio/blob/master/LICENSE).
+
+<Note>
+  For commercial and proprietary usage, MinIO [AIStor](https://www.min.io/product/aistor) provides enterprise-grade support and licensing. See [min.io/pricing](https://min.io/pricing) for details.
+</Note>

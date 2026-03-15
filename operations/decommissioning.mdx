@@ -1,0 +1,160 @@
+---
+title: "Server pool decommissioning"
+description: "Safely remove a server pool from a distributed MinIO deployment"
+---
+
+Decommissioning drains an older server pool and migrates its data to the remaining pools. It is the correct procedure for retiring hardware in a distributed MinIO deployment — for example, replacing `pool1` with newer hardware means decommissioning `pool1` so its data spreads across the remaining pools.
+
+<Warning>
+Decommissioning is a planned, one-way operation. A canceled decommission does not restore the pool to active status. Plan carefully before starting.
+</Warning>
+
+## How decommissioning works
+
+- While a pool is draining, it remains **readable**. All write requests are automatically routed to non-decommissioning pools.
+- Versioned objects retain their original version ordering after migration.
+- If the cluster restarts during decommissioning, the process **resumes from where it left off** — no data is lost and no manual intervention is required.
+- Once decommissioning is marked **Complete**, the pool can be safely removed from the server command line.
+
+## Limitations
+
+<Note>
+- Buckets with ILM Transition (tiering) policies cannot be decommissioned. This will be supported in a future release.
+- Empty delete markers are not migrated to avoid creating empty metadata on the target pools. If you need this behavior, open a GitHub issue.
+- Transitioned hot-tier pooled setups are not currently supported.
+</Note>
+
+## Pre-flight checks
+
+Before starting decommissioning:
+
+1. Confirm the cluster has enough usable capacity on the remaining pools to absorb all data from the pool being decommissioned.
+2. Verify that no buckets in the target pool have active ILM Transition policies.
+3. Ensure the remaining pools have sufficient write quorum.
+4. Plan for the increased load on the remaining pools during the migration.
+
+## Start decommissioning
+
+```bash
+mc admin decommission start alias/ http://minio{1...2}/data{1...4}
+```
+
+Replace `http://minio{1...2}/data{1...4}` with the pool endpoint string as it appears in your MinIO startup configuration.
+
+## Monitor decommission progress
+
+### List all pools
+
+```bash
+mc admin decommission status alias/
+```
+
+Output:
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬──────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status   │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Draining │
+│ 2nd │ http://minio{3...4}/data{1...4} │ 329 GiB (used) / 421 GiB (total) │ Active   │
+└─────┴─────────────────────────────────┴──────────────────────────────────┴──────────┘
+```
+
+### Check progress for a specific pool
+
+```bash
+mc admin decommission status alias/ http://minio{1...2}/data{1...4}
+```
+
+Output during decommissioning:
+
+```
+Decommissioning rate at 36 MiB/sec [4 TiB/50 TiB]
+Started: 1 minute ago
+```
+
+Output when complete:
+
+```
+Decommission of pool http://minio{1...2}/data{1...4} is complete, you may now remove it from server command line
+```
+
+## Cancel a decommission
+
+To pause an in-progress decommission (for example, when system load is too high):
+
+```bash
+# List pools currently draining
+mc admin decommission cancel alias/
+
+# Cancel a specific pool's decommission
+mc admin decommission cancel alias/ http://minio{1...2}/data{1...4}
+```
+
+After canceling, the pool status changes to `Draining(Canceled)`:
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬────────────────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status             │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Draining(Canceled) │
+└─────┴─────────────────────────────────┴──────────────────────────────────┴────────────────────┘
+```
+
+<Warning>
+Canceling a decommission does **not** make the pool active again. Because partial namespace data may already exist on other pools, the pool remains in a canceled state. Only restart the decommission when you are ready to complete it.
+</Warning>
+
+## Restart a canceled or failed decommission
+
+Run the same start command again to resume:
+
+```bash
+mc admin decommission start alias/ http://minio{1...2}/data{1...4}
+```
+
+If decommissioning failed for any reason, `mc admin decommission status alias/` shows `Draining(Failed)` for the affected pool. Use the same restart command to retry.
+
+## After decommissioning is complete
+
+When the status shows `Complete`, the pool has been fully drained and can be removed from the startup configuration.
+
+```
+┌─────┬─────────────────────────────────┬──────────────────────────────────┬──────────┐
+│ ID  │ Pools                           │ Capacity                         │ Status   │
+│ 1st │ http://minio{1...2}/data{1...4} │ 439 GiB (used) / 561 GiB (total) │ Complete │
+│ 2nd │ http://minio{3...4}/data{1...4} │ 329 GiB (used) / 421 GiB (total) │ Active   │
+└─────┴─────────────────────────────────┴──────────────────────────────────┴──────────┘
+```
+
+<Tabs>
+  <Tab title="Bare metal (systemd)">
+    Update the `MINIO_VOLUMES` environment variable to remove the decommissioned pool, then restart all servers in parallel:
+
+    ```bash
+    # Before:
+    # MINIO_VOLUMES="http://minio{1...2}/data{1...4} http://minio{3...4}/data{1...4}"
+
+    # After:
+    export MINIO_VOLUMES="http://minio{3...4}/data{1...4}"
+
+    systemctl restart minio
+    ```
+  </Tab>
+  <Tab title="Kubernetes (StatefulSet)">
+    Update the MinIO container command-line arguments in the StatefulSet spec to remove the pool, then apply:
+
+    ```bash
+    kubectl apply -f statefulset.yaml
+    ```
+  </Tab>
+  <Tab title="Kubernetes (Operator)">
+    Modify the `pools:` section of the Tenant spec from two entries to one, then apply:
+
+    ```bash
+    kubectl apply -f tenant.yaml
+    ```
+  </Tab>
+</Tabs>
+
+<Warning>
+Do not remove a pool from the startup configuration until its status is `Complete`. Pools with `Active` or `Draining` status cannot be removed.
+</Warning>

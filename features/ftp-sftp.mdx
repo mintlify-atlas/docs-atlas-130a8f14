@@ -1,0 +1,227 @@
+---
+title: "FTP and SFTP support"
+description: "Access MinIO buckets using FTP and SFTP protocols"
+---
+
+MinIO includes a built-in FTP and SFTP server. Any FTP or SFTP client can upload and download objects by connecting to these servers and authenticating with MinIO credentials. No additional gateway or proxy is required.
+
+## Supported protocols
+
+| Protocol | Description |
+| :--- | :--- |
+| **SFTP** | Secure File Transfer Protocol over SSH 2.0. Encrypted by default. |
+| **FTPS** | FTP over TLS/SSL. Encryption provided by certificates. |
+| **FTP** | Plain FTP as defined by RFC 959. Not recommended for production. |
+
+## Supported operations
+
+| Operation | Supported |
+| :---: | :--- |
+| `get` | Yes |
+| `put` | Yes |
+| `ls` | Yes |
+| `mkdir` | Yes |
+| `rmdir` | Yes |
+| `delete` | Yes |
+| `append` | No |
+| `rename` | No |
+
+## Authentication and access control
+
+FTP and SFTP authentication uses the same credentials as the MinIO S3 API:
+
+- Built-in IDP users and their service accounts
+- LDAP/AD users and their service accounts (append `=ldap` to the username to force LDAP lookup: `alice=ldap`)
+- OpenID/OIDC service accounts
+
+Access to buckets and objects is governed by the IAM policies attached to the authenticated identity. Rotating (temporary) credentials are not supported — use permanent credentials or service accounts.
+
+On versioned buckets, FTP and SFTP clients operate on the latest version only. To access older versions, use an S3 API client such as `mc`.
+
+## Enabling FTP and SFTP
+
+Pass the `--ftp` and `--sftp` flags when starting MinIO:
+
+```bash
+minio server http://server{1...4}/disk{1...4} \
+  --ftp="address=:8021" \
+  --ftp="passive-port-range=30000-40000" \
+  --sftp="address=:8022" \
+  --sftp="ssh-private-key=/home/miniouser/.ssh/id_rsa"
+```
+
+<Note>
+The `ssh-private-key` argument is required for the SFTP server. Generate a key with `ssh-keygen -t ecdsa -f /home/miniouser/.ssh/id_rsa` if you do not have one.
+</Note>
+
+## FTP configuration options
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--ftp="address=:<port>"` | `:8021` | Listening address and port |
+| `--ftp="passive-port-range=<start>-<end>"` | OS-assigned | Port range for passive mode data connections |
+| `--ftp="tls-private-key=<path>"` | — | Path to TLS private key (enables FTPS) |
+| `--ftp="tls-public-cert=<path>"` | — | Path to TLS certificate (enables FTPS) |
+| `--ftp="force-tls=true"` | `false` | Reject non-TLS connections |
+
+<Note>
+If MinIO is already running with TLS enabled for the S3 API and you do not provide explicit TLS cert/key paths for FTP, MinIO automatically reuses the server's certificates to run FTP over TLS.
+</Note>
+
+## SFTP configuration options
+
+| Flag | Default | Description |
+| :--- | :--- | :--- |
+| `--sftp="address=:<port>"` | `:8022` | Listening address and port |
+| `--sftp="ssh-private-key=<path>"` | — | Path to the SSH host private key (required) |
+| `--sftp="trusted-user-ca-key=<path>"` | — | CA public key for certificate-based client auth |
+| `--sftp="disable-password-auth=true"` | `false` | Disable password authentication (force key-based only) |
+| `--sftp="pub-key-algos=<list>"` | All supported | Comma-separated list of allowed client public key algorithms |
+| `--sftp="kex-algos=<list>"` | Preferred set | Comma-separated list of allowed key-exchange algorithms |
+| `--sftp="cipher-algos=<list>"` | Preferred set | Comma-separated list of allowed cipher algorithms |
+| `--sftp="mac-algos=<list>"` | All supported | Comma-separated list of allowed MAC algorithms |
+
+### Supported algorithms
+
+<AccordionGroup>
+  <Accordion title="Public key algorithms">
+    ```text
+    ssh-ed25519
+    sk-ssh-ed25519@openssh.com
+    sk-ecdsa-sha2-nistp256@openssh.com
+    ecdsa-sha2-nistp256
+    ecdsa-sha2-nistp384
+    ecdsa-sha2-nistp521
+    rsa-sha2-256
+    rsa-sha2-512
+    ssh-rsa
+    ssh-dss
+    ```
+  </Accordion>
+  <Accordion title="Key-exchange algorithms">
+    ```text
+    curve25519-sha256
+    curve25519-sha256@libssh.org
+    ecdh-sha2-nistp256
+    ecdh-sha2-nistp384
+    ecdh-sha2-nistp521
+    diffie-hellman-group14-sha256
+    diffie-hellman-group16-sha512
+    diffie-hellman-group14-sha1
+    diffie-hellman-group1-sha1
+    ```
+  </Accordion>
+  <Accordion title="Cipher algorithms">
+    ```text
+    aes128-ctr
+    aes192-ctr
+    aes256-ctr
+    aes128-gcm@openssh.com
+    aes256-gcm@openssh.com
+    chacha20-poly1305@openssh.com
+    arcfour256
+    arcfour128
+    arcfour
+    aes128-cbc
+    3des-cbc
+    ```
+  </Accordion>
+  <Accordion title="MAC algorithms">
+    ```text
+    hmac-sha2-256-etm@openssh.com
+    hmac-sha2-512-etm@openssh.com
+    hmac-sha2-256
+    hmac-sha2-512
+    hmac-sha1
+    hmac-sha1-96
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Using FTP
+
+### Connect and list bucket contents
+
+```text
+ftp localhost -P 8021
+Connected to localhost.
+220 Welcome to MinIO FTP Server
+Name (localhost:user): minioadmin
+331 User name ok, password required
+Password:
+230 Password ok, continue
+Remote system type is UNIX.
+Using binary mode to transfer files.
+ftp> ls runner/
+229 Entering Extended Passive Mode (|||39155|)
+150 Opening ASCII mode data connection for file list
+drwxrwxrwx 1 nobody nobody            0 Jan  1 00:00 chunkdocs/
+drwxrwxrwx 1 nobody nobody            0 Jan  1 00:00 testdir/
+```
+
+### Download an object
+
+```text
+ftp> get
+(remote-file) runner/chunkdocs/metadata
+(local-file) metadata
+local: metadata remote: runner/chunkdocs/metadata
+229 Entering Extended Passive Mode (|||37785|)
+150 Data transfer starting 45 bytes
+	45        3.58 KiB/s
+226 Closing data connection, sent 45 bytes
+45 bytes received in 00:00 (3.55 KiB/s)
+```
+
+## Using SFTP
+
+### Connect and list bucket contents
+
+```bash
+sftp -P 8022 minioadmin@localhost
+minioadmin@localhost's password:
+Connected to localhost.
+sftp> ls runner/
+chunkdocs  testdir
+```
+
+### Download an object
+
+```text
+sftp> get runner/chunkdocs/metadata metadata
+Fetching /runner/chunkdocs/metadata to metadata
+metadata    100%  226    16.6KB/s   00:00
+```
+
+## Certificate-based authentication (SFTP)
+
+MinIO supports SSH certificate authentication backed by a trusted CA. Specify the CA public key file at server startup:
+
+```bash
+minio server /data \
+  --sftp="address=:8022" \
+  --sftp="ssh-private-key=/etc/minio/id_ecdsa" \
+  --sftp="trusted-user-ca-key=/etc/minio/ca.pub"
+```
+
+When a client presents an SSH certificate, MinIO validates that the certificate is signed by the trusted CA and that the certificate's `ValidPrincipals` list includes the requested username. Certificates without a principals list are rejected.
+
+<Warning>
+Only one CA key file can be specified. Certificates lacking a principals list are always rejected, even when issued by the trusted CA.
+</Warning>
+
+## Port configuration examples
+
+```bash
+# Change FTP port
+--ftp="address=:3021"
+
+# Restrict passive port range for firewall rules
+--ftp="passive-port-range=30000-40000"
+
+# Change SFTP port
+--sftp="address=:3022"
+
+# Restrict SFTP to specific cipher suite
+--sftp="cipher-algos=aes256-gcm@openssh.com,chacha20-poly1305@openssh.com"
+```

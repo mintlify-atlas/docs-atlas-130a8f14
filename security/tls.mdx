@@ -1,0 +1,209 @@
+---
+title: "TLS/SSL configuration"
+description: "Configure TLS encryption for MinIO server connections"
+---
+
+MinIO supports TLS 1.2 and later for all client-server communication. Enabling TLS is strongly recommended for any deployment that handles sensitive data or is exposed to a network you do not fully control.
+
+## Certificate directory
+
+MinIO reads TLS certificates from a `certs` directory at startup.
+
+| Platform | Default path |
+|---|---|
+| Linux | `~/.minio/certs/` |
+| Windows | `%USERPROFILE%\.minio\certs\` |
+
+To use a custom directory, pass the `--certs-dir` flag when starting the server:
+
+```sh
+minio server --certs-dir /etc/minio/certs /data
+```
+
+### Required files
+
+Place these two files in the certs directory:
+
+| File | Purpose |
+|---|---|
+| `private.key` | Private key in PEM format |
+| `public.crt` | Public certificate (and any intermediate certificates) in PEM format |
+
+<Note>
+MinIO only supports keys and certificates in PEM format. PFX certificates are not supported.
+</Note>
+
+## Using an existing certificate
+
+If you already have a certificate from a CA, copy your private key and public certificate directly into the certs directory:
+
+```sh
+cp your-domain.key ~/.minio/certs/private.key
+cp your-domain.crt ~/.minio/certs/public.crt
+```
+
+A certificate signed by a CA includes information about the issued identity (name, expiry, public key) and any intermediate certificates. The root CA certificate is not included in `public.crt`.
+
+## Generating a self-signed certificate
+
+<Tabs>
+  <Tab title="certgen">
+    [`certgen`](https://github.com/minio/certgen/releases/latest) is a MinIO-provided tool that generates self-signed certificates with SAN entries for multiple DNS names or IP addresses.
+
+    ```sh
+    ./certgen -host "10.10.0.3,10.10.0.4,10.10.0.5"
+    ```
+
+    Output:
+
+    ```
+    2018/11/21 10:16:18 wrote public.crt
+    2018/11/21 10:16:18 wrote private.key
+    ```
+
+    Copy the generated files into your certs directory.
+  </Tab>
+  <Tab title="OpenSSL (ECDSA)">
+    Generate a private key using ECDSA:
+
+    ```sh
+    openssl ecparam -genkey -name prime256v1 | openssl ec -out private.key
+    ```
+
+    Then generate a self-signed certificate. First create `openssl.conf`:
+
+    ```ini
+    [req]
+    distinguished_name = req_distinguished_name
+    x509_extensions = v3_req
+    prompt = no
+
+    [req_distinguished_name]
+    C = US
+    ST = VA
+    L = Somewhere
+    O = MyOrg
+    OU = MyOU
+    CN = MyServerName
+
+    [v3_req]
+    subjectAltName = @alt_names
+
+    [alt_names]
+    IP.1 = 127.0.0.1
+    DNS.1 = localhost
+    ```
+
+    Then run:
+
+    ```sh
+    openssl req -new -x509 -nodes -days 730 -keyout private.key -out public.crt -config openssl.conf
+    ```
+  </Tab>
+  <Tab title="OpenSSL (RSA)">
+    Generate a 2048-bit RSA private key:
+
+    ```sh
+    openssl genrsa -out private.key 2048
+    ```
+
+    To generate a password-protected key:
+
+    ```sh
+    openssl genrsa -aes256 -passout pass:PASSWORD -out private.key 2048
+    ```
+
+    When using a password-protected key, supply the password via the `MINIO_CERT_PASSWD` environment variable:
+
+    ```sh
+    export MINIO_CERT_PASSWD=<PASSWORD>
+    ```
+
+    <Warning>
+    The default OpenSSL format for encrypted private keys is PKCS-8, but MinIO only supports PKCS-1. Convert a PKCS-8 key with:
+
+    ```sh
+    openssl rsa -in private-pkcs8-key.key -aes256 -passout pass:PASSWORD -out private.key
+    ```
+    </Warning>
+  </Tab>
+  <Tab title="GnuTLS (Windows)">
+    Download and install [GnuTLS for Windows](http://www.gnutls.org/download.html), then add its `bin` directory to your system path.
+
+    Generate a private key:
+
+    ```powershell
+    certtool.exe --generate-privkey --outfile private.key
+    ```
+
+    Create `cert.cnf`:
+
+    ```ini
+    organization = "Example Inc."
+    state = "Example"
+    country = "EX"
+    cn = "Sally Certowner"
+    expiration_days = 365
+    dns_name = "localhost"
+    ip_address = "127.0.0.1"
+    tls_www_server
+    ```
+
+    Generate the certificate:
+
+    ```powershell
+    certtool.exe --generate-self-signed --load-privkey private.key --template cert.cnf --outfile public.crt
+    ```
+  </Tab>
+</Tabs>
+
+## CA certificates
+
+MinIO connects to other servers (other MinIO nodes, NATS, Redis, LDAP, and KES). If those servers use certificates not trusted by the system CA bundle, add their CA certificates to the MinIO trusted store:
+
+| Platform | CA directory |
+|---|---|
+| Linux | `~/.minio/certs/CAs/` |
+| Windows | `C:\Users\<Username>\.minio\certs\CAs\` |
+
+Place the CA certificate PEM files in that directory and restart MinIO.
+
+<Tip>
+If you are using a self-signed certificate for an LDAP or KES server, add that certificate to the CAs directory so MinIO trusts it.
+</Tip>
+
+## TLS on Kubernetes
+
+On Kubernetes, TLS certificates are typically provisioned as Secrets and mounted into the MinIO pod. Pass the mount path to `--certs-dir`:
+
+```yaml
+args:
+  - server
+  - --certs-dir=/etc/minio/certs
+  - /data
+volumeMounts:
+  - name: tls-certs
+    mountPath: /etc/minio/certs
+```
+
+Place `private.key` and `public.crt` in the Secret so they are available at the expected paths after mounting.
+
+## Virtual-hosted style with `MINIO_DOMAIN`
+
+To use virtual-hosted style bucket addressing (e.g., `bucket.minio.example.com`), set the `MINIO_DOMAIN` environment variable to your domain. Your TLS certificate must include a wildcard SAN (`*.minio.example.com`) or individual SANs for each bucket subdomain.
+
+```sh
+export MINIO_DOMAIN=minio.example.com
+minio server /data
+```
+
+## Self-signed vs CA-signed certificates
+
+| | Self-signed | CA-signed |
+|---|---|---|
+| Setup complexity | Low | Moderate |
+| Trusted by clients automatically | No | Yes (if CA is trusted) |
+| Suitable for production | Not recommended | Yes |
+| Certificate renewal | Manual | Can be automated (e.g., Let's Encrypt / Certbot) |
+
+For production deployments, use a certificate signed by a trusted CA. You can obtain free certificates from Let's Encrypt using Certbot.

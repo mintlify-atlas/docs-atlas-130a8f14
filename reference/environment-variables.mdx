@@ -1,0 +1,249 @@
+---
+title: "Environment variables"
+description: "Complete reference for all MinIO environment variables"
+---
+
+MinIO is configured primarily through environment variables. Variables set at startup take precedence over values written via `mc admin config`.
+
+<Note>
+When an environment variable is set, the corresponding `mc admin config` key becomes read-only. To manage the setting dynamically, unset the environment variable and use `mc admin config set` instead.
+</Note>
+
+## Root credentials
+
+<ParamField body="MINIO_ROOT_USER" type="string" required>
+  The root (admin) access key. Must be set before starting MinIO for the first time.
+
+  ```bash
+  export MINIO_ROOT_USER=minioadmin
+  ```
+</ParamField>
+
+<ParamField body="MINIO_ROOT_PASSWORD" type="string" required>
+  The root (admin) secret key. Must be at least 8 characters.
+
+  ```bash
+  export MINIO_ROOT_PASSWORD=minioadmin
+  ```
+</ParamField>
+
+## Site configuration
+
+<ParamField body="MINIO_SITE_NAME" type="string">
+  A human-readable name for this MinIO deployment. Used in replication, monitoring, and admin UI displays.
+
+  ```bash
+  export MINIO_SITE_NAME=sfo-rack-1
+  ```
+</ParamField>
+
+<ParamField body="MINIO_SITE_REGION" type="string">
+  The region identifier for this deployment. Returned in `GetBucketLocation` responses and used in Signature V4 scoping.
+
+  ```bash
+  export MINIO_SITE_REGION=us-west-1
+  ```
+</ParamField>
+
+<ParamField body="MINIO_SITE_COMMENT" type="string">
+  An optional free-text description for this site.
+</ParamField>
+
+## Network
+
+<ParamField body="MINIO_ADDRESS" type="string" default=":9000">
+  The `ADDRESS:PORT` to bind the S3 API server to. Use `:9000` to bind to all interfaces on port 9000.
+
+  ```bash
+  export MINIO_ADDRESS=0.0.0.0:9000
+  ```
+</ParamField>
+
+<ParamField body="MINIO_CONSOLE_ADDRESS" type="string">
+  The `ADDRESS:PORT` to bind the embedded web console to. If not set, MinIO picks a random port.
+
+  ```bash
+  export MINIO_CONSOLE_ADDRESS=:9001
+  ```
+</ParamField>
+
+<ParamField body="MINIO_DOMAIN" type="string">
+  Enables virtual-host-style bucket addressing. Requests to `<bucket>.<domain>` are routed to the named bucket. Accepts a comma-separated list of domains.
+
+  ```bash
+  export MINIO_DOMAIN=s3.example.com
+  # Multiple domains:
+  export MINIO_DOMAIN=s3.example.com,storage.example.com
+  ```
+</ParamField>
+
+## Storage classes
+
+<ParamField body="MINIO_STORAGE_CLASS_STANDARD" type="string" default="EC:N/2">
+  Parity level for the `STANDARD` storage class. Format: `EC:<n>` where `n` is the number of parity drives.
+
+  The default parity depends on the erasure set size: EC:2 for sets of 5 or fewer drives, EC:3 for 6-7, EC:4 for 8 or more.
+
+  ```bash
+  export MINIO_STORAGE_CLASS_STANDARD=EC:4
+  ```
+</ParamField>
+
+<ParamField body="MINIO_STORAGE_CLASS_RRS" type="string" default="EC:1">
+  Parity level for the `REDUCED_REDUNDANCY` storage class. Must be less than `MINIO_STORAGE_CLASS_STANDARD`.
+
+  ```bash
+  export MINIO_STORAGE_CLASS_RRS=EC:2
+  ```
+</ParamField>
+
+## API behavior
+
+<ParamField body="MINIO_API_REQUESTS_MAX" type="number" default="auto">
+  Maximum number of concurrent API requests the server will process. Requests beyond this limit receive a `503 SlowDown` response. The default `auto` value is calculated from available memory.
+</ParamField>
+
+<ParamField body="MINIO_API_CLUSTER_DEADLINE" type="duration" default="10s">
+  How long to wait for the cluster to become ready before rejecting requests.
+</ParamField>
+
+<ParamField body="MINIO_API_CORS_ALLOW_ORIGIN" type="string" default="*">
+  Comma-separated list of origins permitted to make CORS requests. Use `*` to allow all origins.
+
+  ```bash
+  export MINIO_API_CORS_ALLOW_ORIGIN=https://app.example.com,https://admin.example.com
+  ```
+</ParamField>
+
+<ParamField body="MINIO_API_LIST_QUORUM" type="string" default="strict">
+  Quorum requirement for list operations. Valid values:
+
+  - `strict` — all drives must respond
+  - `optimal` — majority must respond
+  - `reduced` — read quorum
+  - `disk` — single drive
+  - `auto` — MinIO selects based on cluster state
+</ParamField>
+
+<ParamField body="MINIO_API_REPLICATION_PRIORITY" type="string" default="auto">
+  Priority of background replication relative to client I/O. Valid values: `auto`, `fast`, `slow`.
+</ParamField>
+
+<ParamField body="MINIO_API_REPLICATION_MAX_WORKERS" type="number" default="500">
+  Maximum number of concurrent replication worker goroutines.
+</ParamField>
+
+<ParamField body="MINIO_API_TRANSITION_WORKERS" type="number" default="100">
+  Number of workers for object lifecycle tier transitions.
+</ParamField>
+
+<ParamField body="MINIO_API_STALE_UPLOADS_EXPIRY" type="duration" default="24h">
+  Multipart uploads older than this value without any activity are considered stale and eligible for cleanup.
+</ParamField>
+
+<ParamField body="MINIO_API_STALE_UPLOADS_CLEANUP_INTERVAL" type="duration" default="6h">
+  How often the server checks for and removes stale multipart uploads.
+</ParamField>
+
+<ParamField body="MINIO_API_DELETE_CLEANUP_INTERVAL" type="duration" default="5m">
+  How often the server permanently deletes objects from the internal `.trash` folder.
+</ParamField>
+
+<ParamField body="MINIO_API_ODIRECT" type="boolean" default="on">
+  Controls `O_DIRECT` for write I/O. Disabling bypasses the OS page cache but is not recommended for production without benchmarking.
+</ParamField>
+
+<ParamField body="MINIO_API_ROOT_ACCESS" type="boolean" default="on">
+  When set to `off`, the root credentials cannot be used for S3 or admin API operations. Useful for enforcing IAM-only access.
+</ParamField>
+
+<ParamField body="MINIO_API_SYNC_EVENTS" type="boolean" default="off">
+  When `on`, bucket notification events are delivered synchronously before the response is sent to the client.
+</ParamField>
+
+<ParamField body="MINIO_API_OBJECT_MAX_VERSIONS" type="number" default="9223372036854775807">
+  Maximum number of versions allowed per object key. Once the limit is reached, new puts are rejected.
+</ParamField>
+
+<ParamField body="MINIO_API_REMOTE_TRANSPORT_DEADLINE" type="duration" default="2h">
+  Deadline for API requests on remote transports when proxying between federated instances.
+</ParamField>
+
+## Browser (console)
+
+<ParamField body="MINIO_BROWSER" type="string" default="on">
+  Controls access to the embedded web console. Set to `off` to disable the console.
+
+  ```bash
+  export MINIO_BROWSER=off
+  ```
+</ParamField>
+
+## Scanner
+
+<ParamField body="MINIO_SCANNER_DELAY" type="float" default="10.0">
+  Delay multiplier between scanner operations. Higher values slow down the scanner, reducing resource usage at the cost of slower metric and lifecycle updates. Set via `mc admin config set alias/ scanner delay=<value>`.
+</ParamField>
+
+<ParamField body="MINIO_SCANNER_MAX_WAIT" type="duration" default="15s">
+  Maximum wait time between individual scanner operations.
+</ParamField>
+
+## Healing
+
+<ParamField body="MINIO_HEAL_BITROTSCAN" type="string" default="off">
+  When `on`, the healer performs bitrot verification on all drive reads during background scans. Set via `mc admin config set alias/ heal bitrotscan=on`.
+</ParamField>
+
+<ParamField body="MINIO_HEAL_MAX_SLEEP" type="duration" default="250ms">
+  Maximum sleep time between individual heal operations. Increasing this value slows healing to reduce I/O impact.
+</ParamField>
+
+<ParamField body="MINIO_HEAL_MAX_IO" type="integer" default="100">
+  Maximum number of concurrent client requests before the healer starts throttling. Below this threshold the healer runs at full speed.
+</ParamField>
+
+## Etcd (federation)
+
+<ParamField body="MINIO_ETCD_ENDPOINTS" type="string" required>
+  Required for etcd-based federation. Comma-separated list of etcd endpoint URLs.
+
+  ```bash
+  export MINIO_ETCD_ENDPOINTS=http://etcd1:2379,http://etcd2:2379
+  ```
+</ParamField>
+
+<ParamField body="MINIO_ETCD_PATH_PREFIX" type="string">
+  Namespace prefix within etcd to isolate this MinIO tenant. When set, bucket names are no longer globally unique across tenants.
+</ParamField>
+
+<ParamField body="MINIO_ETCD_COREDNS_PATH" type="string" default="/skydns">
+  etcd path where DNS records for bucket virtual hosting are written.
+</ParamField>
+
+<ParamField body="MINIO_ETCD_CLIENT_CERT" type="path">
+  Path to the client certificate for mTLS authentication with etcd.
+</ParamField>
+
+<ParamField body="MINIO_ETCD_CLIENT_CERT_KEY" type="path">
+  Path to the private key for the etcd client certificate.
+</ParamField>
+
+## Notifications
+
+MinIO supports publishing bucket notifications to the following targets. Each target type is configured via its own set of environment variables.
+
+| Target | Env var prefix |
+|---|---|
+| Webhook | `MINIO_NOTIFY_WEBHOOK_*` |
+| AMQP (RabbitMQ) | `MINIO_NOTIFY_AMQP_*` |
+| Kafka | `MINIO_NOTIFY_KAFKA_*` |
+| MQTT | `MINIO_NOTIFY_MQTT_*` |
+| NATS | `MINIO_NOTIFY_NATS_*` |
+| NSQ | `MINIO_NOTIFY_NSQ_*` |
+| MySQL | `MINIO_NOTIFY_MYSQL_*` |
+| PostgreSQL | `MINIO_NOTIFY_POSTGRES_*` |
+| Elasticsearch | `MINIO_NOTIFY_ELASTICSEARCH_*` |
+| Redis | `MINIO_NOTIFY_REDIS_*` |
+
+Refer to the [MinIO documentation](https://min.io) for per-target configuration details.

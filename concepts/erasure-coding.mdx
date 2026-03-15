@@ -1,0 +1,188 @@
+---
+title: "Erasure coding"
+description: "How MinIO uses Reed-Solomon erasure coding to protect data against drive failures"
+---
+
+MinIO protects data against hardware failures and silent data corruption using erasure coding and checksums. With the highest level of redundancy, you can lose up to half (N/2) of the total drives in an erasure set and still recover all data.
+
+## What is erasure coding?
+
+Erasure coding is a mathematical algorithm to reconstruct missing or corrupted data. MinIO uses **Reed-Solomon** code to shard objects into variable data and parity blocks distributed across drives.
+
+For example, in a 12-drive setup, an object can be sharded across all drives — ranging from 6 data + 6 parity blocks down to 10 data + 2 parity blocks. The default split is **N/2 data and N/2 parity**, which provides the strongest protection against drive failures.
+
+<Note>
+  With the default N/2 configuration, you can lose any half of your drives and still reconstruct all data reliably from the remaining drives.
+</Note>
+
+### Why erasure coding instead of RAID?
+
+Erasure coding has important advantages over RAID or simple replication:
+
+- **Larger fault tolerance** — RAID 6 tolerates only two drive failures. MinIO erasure coding tolerates loss of up to N/2 drives.
+- **Object-level healing** — MinIO encodes each object individually, so it can heal one object at a time without taking a volume offline. RAID healing operates at the volume level, requiring downtime.
+- **No single point of failure** — Distributed erasure sets spread data across multiple nodes and drives.
+- **Hardware acceleration** — MinIO's erasure-coded backend takes advantage of hardware acceleration wherever available.
+
+## Bit rot protection
+
+Bit rot (also called data rot or silent data corruption) is a data loss issue where drive data silently corrupts without signaling an error. This is more dangerous than a permanent drive failure because it goes undetected.
+
+MinIO uses high-speed **HighwayHash** checksums to detect and protect against bit rot. Every object written to MinIO is checksummed, and the checksum is verified on every read. If corruption is detected, MinIO reconstructs the object from the remaining parity shards automatically.
+
+## Erasure sets
+
+MinIO divides the drives you provide into **erasure-coding sets** of 2 to 16 drives. The number of drives presented must be a multiple of one of these set sizes.
+
+MinIO uses the **largest possible EC set size** that divides evenly into the number of drives:
+
+| Total drives | Erasure set configuration |
+|---|---|
+| 8 | 1 set of 8 drives |
+| 12 | 1 set of 12 drives |
+| 16 | 1 set of 16 drives |
+| 18 | 2 sets of 9 drives |
+| 24 | 2 sets of 12 drives |
+| 32 | 2 sets of 16 drives |
+
+<Info>
+  In distributed (multi-node) setups, MinIO chooses erasure stripe sizes based on node affinity rather than the simple largest-divisor rule used in standalone deployments.
+</Info>
+
+All drives in an erasure set should be approximately the same size. Each object is written to exactly one erasure set.
+
+## Starting MinIO with erasure coding
+
+<Tabs>
+  <Tab title="Binary">
+    Start a MinIO server with 12 drives:
+
+    ```sh
+    minio server /data{1...12}
+    ```
+
+    MinIO automatically configures erasure coding across all 12 drives (6 data + 6 parity by default).
+  </Tab>
+  <Tab title="Docker / Podman">
+    Start MinIO in an 8-drive setup using Podman:
+
+    ```sh
+    podman run \
+      -p 9000:9000 \
+      -p 9001:9001 \
+      --name minio \
+      -v /mnt/data1:/data1 \
+      -v /mnt/data2:/data2 \
+      -v /mnt/data3:/data3 \
+      -v /mnt/data4:/data4 \
+      -v /mnt/data5:/data5 \
+      -v /mnt/data6:/data6 \
+      -v /mnt/data7:/data7 \
+      -v /mnt/data8:/data8 \
+      quay.io/minio/minio server /data{1...8} --console-address ":9001"
+    ```
+  </Tab>
+</Tabs>
+
+## Configuring storage classes
+
+MinIO supports two storage classes that let you trade redundancy for storage efficiency on a per-object basis.
+
+### STANDARD storage class
+
+The `STANDARD` class implies **more parity** than `REDUCED_REDUNDANCY`. The default parity level depends on the erasure set size:
+
+| Erasure set size | Default parity |
+|---|---|
+| 5 drives or fewer | EC:2 |
+| 6–7 drives | EC:3 |
+| 8 or more drives | EC:4 |
+
+The `STANDARD` parity value must:
+- Be greater than or equal to 2 (if `REDUCED_REDUNDANCY` parity is not set)
+- Be greater than the `REDUCED_REDUNDANCY` parity (if set)
+- Not exceed N/2 (parity blocks cannot exceed data blocks)
+
+### REDUCED_REDUNDANCY storage class
+
+The `REDUCED_REDUNDANCY` (RRS) class uses **less parity** to reduce storage overhead. It must:
+- Be less than N/2 (if `STANDARD` parity is not set)
+- Be less than `STANDARD` parity (if set)
+
+The default value for `REDUCED_REDUNDANCY` is `EC:1`.
+
+### Storage space tradeoffs
+
+Using fewer parity drives reduces storage overhead. The table below shows approximate storage usage for different configurations on a 16-drive deployment storing a 100 MiB file:
+
+| Data drives | Parity drives | Storage usage ratio | 100 MiB file uses |
+|---|---|---|---|
+| 8 | 8 | 2.00× | ~200 MiB |
+| 9 | 7 | 1.79× | ~179 MiB |
+| 10 | 6 | 1.60× | ~160 MiB |
+| 11 | 5 | 1.45× | ~145 MiB |
+| 12 | 4 | 1.34× | ~134 MiB |
+| 13 | 3 | 1.23× | ~123 MiB |
+| 14 | 2 | 1.14× | ~114 MiB |
+
+Approximate storage usage ratio = total drives (N) ÷ data drives (D).
+
+### Setting storage class environment variables
+
+Set storage class parity levels using environment variables before starting the server:
+
+```sh
+export MINIO_STORAGE_CLASS_STANDARD=EC:3
+export MINIO_STORAGE_CLASS_RRS=EC:2
+```
+
+You can also configure storage classes at runtime using `mc admin config`:
+
+```sh
+mc admin config set myminio storage_class standard=EC:3 rrs=EC:2
+```
+
+### Uploading objects with a specific storage class
+
+Specify the storage class per-object via the `x-amz-storage-class` request metadata header, or using the MinIO Go SDK:
+
+```go
+n, err := s3Client.PutObject(
+    "my-bucketname",
+    "my-objectname",
+    object,
+    objectStat.Size(),
+    minio.PutObjectOptions{
+        ContentType:  "application/octet-stream",
+        StorageClass: "REDUCED_REDUNDANCY",
+    },
+)
+```
+
+<Note>
+  If `STANDARD` storage class is set via environment variables but `x-amz-storage-class` is absent from the request, MinIO applies the `STANDARD` class automatically.
+</Note>
+
+## Frequently asked questions
+
+<AccordionGroup>
+  <Accordion title="Can I change the erasure set size after deployment?">
+    No. The erasure set size is determined at deployment time based on the number of drives provided. To change the erasure set size, you must decommission the existing pool and deploy a new one. MinIO supports adding new server pools to expand capacity without redeploying.
+  </Accordion>
+
+  <Accordion title="What happens when a drive fails?">
+    MinIO continues to serve reads and writes as long as a quorum of drives (more than half the parity drives) is available. Reads require at least N/2 drives online. Writes require more than N/2 drives. When a failed drive is replaced, MinIO's built-in healing automatically reconstructs the missing data on the new drive.
+  </Accordion>
+
+  <Accordion title="Does erasure coding protect against node failures in distributed mode?">
+    Yes. In distributed mode, MinIO distributes erasure set shards across nodes so that the loss of an entire node does not exceed the parity threshold. MinIO uses node affinity when choosing erasure stripe sizes to ensure cross-node redundancy.
+  </Accordion>
+
+  <Accordion title="Can I use both STANDARD and REDUCED_REDUNDANCY in the same bucket?">
+    Yes. Storage class is set per-object at upload time via the `x-amz-storage-class` header. Different objects in the same bucket can use different storage classes.
+  </Accordion>
+
+  <Accordion title="What is the minimum number of drives for erasure coding?">
+    Erasure sets require a minimum of 2 drives. However, for meaningful redundancy, at least 4 drives (2 data + 2 parity) are recommended. In practice, 8 or more drives provide a good balance of redundancy and storage efficiency.
+  </Accordion>
+</AccordionGroup>

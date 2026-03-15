@@ -1,0 +1,197 @@
+---
+title: "Object tiering"
+description: "Transition cold objects to warm storage tiers including S3, Azure Blob, and GCS"
+---
+
+Object tiering (also called ILM transition) lets you automatically move objects to lower-cost remote storage after a defined period. The remote storage is called a **warm backend** or **remote tier**. Objects transitioned to a tier are physically stored in the remote backend; the MinIO cluster retains only metadata.
+
+When a client reads a tiered object, MinIO fetches it transparently from the remote backend and streams it to the caller — no application changes are needed.
+
+## Supported warm backends
+
+<CardGroup cols={2}>
+  <Card title="Amazon S3" icon="aws">
+    Any S3-compatible endpoint. Supports static credentials, IAM instance roles, and web identity (EKS IRSA).
+  </Card>
+  <Card title="Azure Blob Storage" icon="microsoft">
+    Azure Blob containers. Supports account key credentials and Azure managed identities.
+  </Card>
+  <Card title="Google Cloud Storage" icon="google">
+    GCS buckets with a service account JSON key file.
+  </Card>
+  <Card title="MinIO" icon="server">
+    Another MinIO deployment. Uses the same S3-compatible interface under the hood.
+  </Card>
+</CardGroup>
+
+## How tiering works
+
+<Steps>
+  <Step title="Create a remote tier">
+    Register a remote backend as a named tier using `mc ilm tier add`. The tier name must be uppercase.
+  </Step>
+  <Step title="Define an ILM transition rule">
+    Add a lifecycle rule to a bucket that references the tier name. Objects matching the rule (by age, prefix, or tag) are transitioned after the specified number of days.
+  </Step>
+  <Step title="MinIO transitions eligible objects">
+    The ILM scanner identifies eligible objects and copies them to the warm backend. After a successful transfer, MinIO removes the local data and keeps only the object metadata with a pointer to the remote location.
+  </Step>
+  <Step title="Clients read tiered objects transparently">
+    GET and HEAD requests succeed as normal. MinIO retrieves the object from the remote backend on demand.
+  </Step>
+</Steps>
+
+## Adding a tier
+
+<Tabs>
+  <Tab title="Amazon S3">
+    ```bash
+    mc ilm tier add s3 myminio COLD-S3 \
+      --endpoint https://s3.amazonaws.com \
+      --access-key AKIAIOSFODNN7EXAMPLE \
+      --secret-key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY \
+      --bucket cold-objects \
+      --prefix archived/ \
+      --region us-east-1 \
+      --storage-class STANDARD_IA
+    ```
+
+    For IAM instance roles (no static keys required):
+
+    ```bash
+    mc ilm tier add s3 myminio COLD-S3 \
+      --endpoint https://s3.amazonaws.com \
+      --bucket cold-objects \
+      --aws-role
+    ```
+
+    For EKS web identity (IRSA):
+
+    ```bash
+    mc ilm tier add s3 myminio COLD-S3 \
+      --endpoint https://s3.amazonaws.com \
+      --bucket cold-objects \
+      --aws-role-arn arn:aws:iam::123456789012:role/minio-tier-role \
+      --aws-web-identity-token-file /var/run/secrets/eks.amazonaws.com/serviceaccount/token
+    ```
+  </Tab>
+  <Tab title="Azure Blob">
+    ```bash
+    mc ilm tier add azure myminio COLD-AZURE \
+      --endpoint https://myaccount.blob.core.windows.net \
+      --access-key myaccount \
+      --secret-key myaccountkey== \
+      --bucket cold-container \
+      --prefix archived/ \
+      --storage-class Cool
+    ```
+
+    Supported Azure access tiers: `Hot`, `Cool`, `Archive`.
+  </Tab>
+  <Tab title="Google Cloud Storage">
+    ```bash
+    mc ilm tier add gcs myminio COLD-GCS \
+      --credentials-file /etc/minio/gcs-key.json \
+      --bucket cold-bucket \
+      --prefix archived/ \
+      --storage-class NEARLINE
+    ```
+  </Tab>
+  <Tab title="MinIO">
+    ```bash
+    mc ilm tier add minio myminio COLD-MINIO \
+      --endpoint http://cold-minio:9000 \
+      --access-key tiering-user \
+      --secret-key tiering-password \
+      --bucket cold-objects \
+      --prefix archived/
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+Tier names must be uppercase. The names `STANDARD` and `RRS` are reserved by MinIO and cannot be used.
+</Note>
+
+## Listing tiers
+
+```bash
+mc ilm tier ls myminio
+```
+
+```text
+TIER    TYPE    ENDPOINT                             BUCKET          PREFIX
+COLD-S3 s3      https://s3.amazonaws.com             cold-objects    archived/
+```
+
+## Verifying tier connectivity
+
+```bash
+mc ilm tier verify myminio COLD-S3
+```
+
+This performs a probe write, read, and delete against the warm backend to confirm credentials and permissions are correct.
+
+## Defining ILM transition rules
+
+Once a tier exists, create a lifecycle rule that transitions objects to it:
+
+```bash
+# Transition objects older than 90 days to COLD-S3
+mc ilm rule add myminio/mybucket \
+  --transition-days 90 \
+  --transition-tier COLD-S3
+
+# Transition objects under a prefix after 30 days
+mc ilm rule add myminio/mybucket \
+  --prefix "logs/" \
+  --transition-days 30 \
+  --transition-tier COLD-S3
+```
+
+```bash
+# List all lifecycle rules on a bucket
+mc ilm rule ls myminio/mybucket
+```
+
+## Operations on tiered objects
+
+| Operation | Behavior |
+| :--- | :--- |
+| `GET` / `HEAD` | Served transparently; MinIO fetches from the warm backend on demand |
+| `PUT` (overwrite) | New version stored locally; the tiered version is removed from the warm backend |
+| `DELETE` | Object metadata removed from MinIO; the remote copy is deleted from the warm backend |
+| `COPY` | Creates a new local copy; does not touch the tiered data |
+| Restore (`POST ?restore`) | Brings a temporary copy back to local hot storage for faster access |
+
+## Tier stats
+
+View cumulative storage and usage statistics for all tiers:
+
+```bash
+mc ilm tier stats myminio
+```
+
+Stats include objects transitioned, total bytes stored in each tier, and daily transfer activity.
+
+## Editing tier credentials
+
+To rotate or update credentials for an existing tier without deleting and recreating it:
+
+```bash
+mc ilm tier update myminio COLD-S3 \
+  --access-key NEWAKIAIOSFODNN7EXAMPLE \
+  --secret-key newSecretKeyValue
+```
+
+## Removing a tier
+
+A tier can only be removed if no objects are currently stored in it. Use `--force` to bypass the in-use check (only safe if you have confirmed no objects remain in the tier).
+
+```bash
+mc ilm tier rm myminio COLD-S3
+```
+
+<Warning>
+Removing a tier that still holds tiered objects will make those objects permanently inaccessible. Always verify the tier is empty before removing it.
+</Warning>
